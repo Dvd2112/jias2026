@@ -2,12 +2,12 @@ import * as db from './db.js';
 import {
   S, getTeam, getSport, tn, fmt, newId, makeBracket, buildKO, isStale, resolve, standings, placements,
   totals, patchMatch, clearScoreFields, clearScheduleFields, CATS, sportLabel, catShort, pickFeatured, schedTs,
-  minutesOf, setThird, findConflicts, planSequence, span, fmtClock, fmtDay, normPlace,
+  minutesOf, setThird, planSequence, span, fmtClock, fmtDay, normPlace,
 } from './logic.js';
 import { identityOf } from './teams.js';
 
 const { auth, canScore, isAdmin } = db;
-const BUILD = '2026-11-11.7';
+const BUILD = '2026-11-11.8';
 const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 const $ = id => document.getElementById(id);
 
@@ -278,7 +278,6 @@ function celebrate() {
 function viewAgenda() {
   const f = ui.ag, all = [];
   S.sports.forEach(sp => { const R = resolve(sp); if (R) R.list.filter(m => !m.bye).forEach(m => all.push({ sp, m })); });
-  const conf = canScore() ? findConflicts(all) : {};   // sobreposição de horários (considera a duração média) no mesmo ginásio ou com a mesma atlética
   // destaque: jogo ao vivo (o mais antigo no ar) ou o próximo agendado; respeita o filtro de modalidade/categoria
   if (f.team && !getTeam(f.team)) f.team = '';
   const mine = ({ sp, m }) => (!f.sport || sp.name === f.sport) && (!f.cat || sp.category === f.cat) && (!f.team || m.a === f.team || m.b === f.team);
@@ -291,8 +290,7 @@ function viewAgenda() {
   items.sort((x, y) => key(x).localeCompare(key(y)) || x.sp.name.localeCompare(y.sp.name) || x.sp.category.localeCompare(y.sp.category) || x.m.round - y.m.round);
 
   const card = ({ sp, m }) => {
-    const c = conf[sp.id + m.id];
-    return gameCard(sp, m, { showSport: true }) + (c ? `<div class="conf">⚠ Conflito de horário: ${[...c].map(esc).join(', ')}</div>` : '');
+    return gameCard(sp, m, { showSport: true });
   };
   let html = '';
   const live = items.filter(({ m }) => m.live);
@@ -354,7 +352,7 @@ function adminPanel(sp) {
       ${sp.scoring === 'sets' ? `<label class="fld">Melhor de<select data-bestof><option value="3" ${sp.best_of !== 5 ? 'selected' : ''}>3 sets</option><option value="5" ${sp.best_of === 5 ? 'selected' : ''}>5 sets</option></select></label>` : ''}</div>
     ${sp.scoring === 'sets' && sp.bracket ? '<p class="muted">Defina o tipo de placar antes de começar os jogos: trocar depois não converte os placares já lançados.</p>' : ''}
     <label class="fld">Duração média de um jogo de ${esc(sp.name)} (minutos)<input type="number" min="5" max="480" step="5" data-minutes="${esc(sp.name)}" value="${minutesOf(sp)}"></label>
-    <p class="muted">Vale para o masculino e o feminino. Usada no horário final dos jogos, na tabela e na detecção de conflitos.</p>
+    <p class="muted">Vale para o masculino e o feminino. Usada no horário final dos jogos e na tabela.</p>
   </details>
   <div class="adminbar">
     <div class="row"><button class="btn" data-gen="random" ${can ? '' : 'disabled'}>🎲 ${sp.bracket ? 'Sortear de novo' : 'Sortear'}</button>
@@ -427,7 +425,6 @@ function viewTable() {
   if (!all.length) return '<p class="empty">O chaveamento ainda não foi sorteado.</p>';
   const edit = T.edit && canScore();
   const dates = [...new Set(all.map(({ m }) => m.rec.date).filter(Boolean))].sort();
-  const conf = canScore() ? findConflicts(all) : {};   // conflitos só aparecem para quem organiza
   const gym = T.by === 'gym';
 
   const groups = new Map();
@@ -446,7 +443,7 @@ function viewTable() {
       const d = m.rec.date || '', k = rowKey(sp, m);
       if (d !== last) { html += `<tr class="dayrow"><td colspan="${edit ? 8 : 7}">${d ? esc(fmtDate(d)) : 'Sem data definida'}</td></tr>`; last = d; n = 0; }
       n++;
-      const t = span(sp, m), c = conf[sp.id + m.id];
+      const t = span(sp, m);
       let time, where;
       if (edit) {
         time = `<input type="date" class="ti" ${ids(sp, m)} data-mf="date" value="${esc(m.rec.date || '')}" aria-label="Data"><input type="time" class="ti" ${ids(sp, m)} data-mf="time" value="${esc(m.rec.time || '')}" aria-label="Hora">${t ? `<span class="end"> – ${fmtClock(t.end)}</span>` : ''}`;
@@ -458,7 +455,7 @@ function viewTable() {
       const score = (m.live || m.done) && m.sa != null && m.sb != null ? `<b>${m.sa} × ${m.sb}</b>${m.wo ? ' <span class="wobadge">WO</span>' : ''}` : '<span class="muted">—</span>';
       html += `<tr class="${m.live ? 'live' : ''} ${m.done ? 'done' : ''}">${edit ? `<td class="c-sel noprint"><input type="checkbox" data-tbsel="${k}" ${T.sel.has(k) ? 'checked' : ''} aria-label="Selecionar jogo"></td>` : ''}<td class="pos c-pos">${n}</td><td class="tm c-tm">${time}</td><td class="c-wh">${where}</td><td class="c-fa">${esc(m.label)}</td>
         <td class="vs c-vs"><span class="vsw">${teamTag(m.a)}<i>×</i>${teamTag(m.b)}</span></td><td class="n c-sc">${score}</td>
-        <td class="c-st">${statusBadge(m)}${c ? ` <span class="conf-ic" title="Conflito: ${esc([...c].join(', '))}">⚠ conflito</span>` : ''}</td></tr>`;
+        <td class="c-st">${statusBadge(m)}</td></tr>`;
     });
     return html;
   };
@@ -491,7 +488,7 @@ function viewTable() {
     ${bulk}
     <h1 class="printonly">JIAS 2026 — Tabela de jogos<small>${esc(what)}</small></h1>
     ${cards || '<p class="empty">Nenhum jogo com esses filtros.</p>'}
-    <p class="muted noprint">Ordem por data e horário. O horário final é o início mais a duração média da modalidade${canScore() ? '; conflitos = jogos que se sobrepõem no mesmo ginásio ou com a mesma atlética' : ''}.</p>`;
+    <p class="muted noprint">Ordem por data e horário. O horário final é o início mais a duração média da modalidade.</p>`;
 }
 // aplica o ajuste em lote aos jogos selecionados (na ordem da tabela)
 function applyBulk() {
@@ -556,7 +553,7 @@ function viewPlan() {
 
   const spans = day.map(it => { const t = span(it.sp, it.m); return t ? { ...it, s: toMin(it.m.rec.time), e: toMin(it.m.rec.time) + Math.round((t.end - t.start) / 60000) } : null; }).filter(Boolean);
   const h0 = Math.floor(Math.min(toMin(P.start), ...spans.map(x => x.s)) / 60), h1 = Math.ceil(Math.max(toMin(P.end), ...spans.map(x => x.e)) / 60);
-  const base = h0 * 60, H = (h1 - h0) * 6 * PX10, conf = findConflicts(all);
+  const base = h0 * 60, H = (h1 - h0) * 6 * PX10;
   const chips = `<div class="card noprint"><h2>Dias</h2><div class="chips daychips">${days.map(d => `<button class="${P.date === d ? 'on' : ''}" data-plday="${d}">${esc(new Date(+d.slice(0, 4), +d.slice(5, 7) - 1, +d.slice(8)).toLocaleDateString('pt-BR', { weekday: 'short', day: '2-digit', month: '2-digit' }))}</button>`).join('')}</div>
     ${dayAdd}${(S.config.days || []).includes(P.date) && !day.length && isAdmin() ? `<div class="row"><button class="btn sm alt" data-daydel="${P.date}">Remover este dia (vazio)</button></div>` : ''}
     <div class="grid2"><label class="fld">Grade começa às<input type="time" data-pl="start" value="${esc(P.start)}"></label><label class="fld">Grade termina às<input type="time" data-pl="end" value="${esc(P.end)}"></label></div>
@@ -579,10 +576,10 @@ function viewPlan() {
     const its = spans.filter(x => normPlace(x.m.rec.place) === normPlace(g)).sort((x, y) => x.s - y.s || x.e - y.e);
     const lanes = []; its.forEach(x => { let i = lanes.findIndex(end => end <= x.s); if (i < 0) i = lanes.length; lanes[i] = x.e; x.lane = i; });
     its.forEach(x => { x.n = its.filter(y => y.s < x.e && x.s < y.e).reduce((n, y) => Math.max(n, y.lane + 1), x.lane + 1); });
-    const cards = its.map(x => { const { sp, m } = x, c = conf[sp.id + m.id], top = (x.s - base) / 10 * PX10, ht = (x.e - x.s) / 10 * PX10;
-      return `<div class="gcard ${sp.category} ${c ? 'bad' : ''} ${m.live ? 'live' : ''}" data-gc ${ids(sp, m)} data-s="${x.s}" data-e="${x.e}" style="top:${top}px;height:${ht}px;left:${x.lane / x.n * 100}%;width:${100 / x.n}%">
+    const cards = its.map(x => { const { sp, m } = x, top = (x.s - base) / 10 * PX10, ht = (x.e - x.s) / 10 * PX10;
+      return `<div class="gcard ${sp.category} ${m.live ? 'live' : ''}" data-gc ${ids(sp, m)} data-s="${x.s}" data-e="${x.e}" style="top:${top}px;height:${ht}px;left:${x.lane / x.n * 100}%;width:${100 / x.n}%">
         <i class="rz t" data-rz="t"></i><div class="gb"><b>${esc(sp.name)}</b> <span class="cat ${sp.category}">${catShort(sp.category)}</span> <small>${esc(m.label)}</small>
-        <div class="gt">${esc(tn(m.a) || 'A definir')} × ${esc(tn(m.b) || 'A definir')}</div><small class="gh">${clockOf(x.s)}–${clockOf(x.e)} · ${x.e - x.s} min${c ? ' · ⚠ conflito' : ''}</small></div>
+        <div class="gt">${esc(tn(m.a) || 'A definir')} × ${esc(tn(m.b) || 'A definir')}</div><small class="gh">${clockOf(x.s)}–${clockOf(x.e)} · ${x.e - x.s} min</small></div>
         <button class="link noprint" ${ids(sp, m)} data-plrm title="Tirar da grade" aria-label="Tirar da grade">✕</button><i class="rz b" data-rz="b"></i></div>`; }).join('');
     const k = P.pick, open = k && normPlace(k.gym) === normPlace(g);
     return `<div class="gcol" data-gcol="${esc(g)}" style="height:${H}px">${cards}${open ? `<div class="pickbox" style="top:${Math.min((toMin(k.time) - base) / 10 * PX10, H - 150)}px">${pickUI(k)}</div>` : ''}</div>`;
@@ -647,8 +644,7 @@ function placeGame(spName, cat, mid, date, time, gym) {
   const sp = S.sports.find(x => x.name === spName && x.category === cat); if (!sp) return;
   const patch = {}; [['date', date], ['time', time], ['place', gym]].forEach(([f, v]) => Object.assign(patch, patchMatch(sp, mid, f, v)));
   ui.pl.pick = null; render(); db.saveMatches(sp.id, [{ id: mid, ...patch }]);
-  const c = findConflicts(S.sports.flatMap(x => { const R = resolve(x); return R ? R.list.filter(m => !m.bye).map(m => ({ sp: x, m })) : []; }))[sp.id + mid];
-  toast(c ? `Atenção: conflito (${[...c].join(', ')})` : 'Jogo colocado na grade.', !!c);
+  toast('Jogo colocado na grade.');
 }
 
 /* ----- Ranking / Ajustes ----- */
