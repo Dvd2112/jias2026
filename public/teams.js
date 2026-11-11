@@ -12,7 +12,7 @@ export const IDENTITIES = [
   T('urso', 'Urso', 'AAAD CESUL', [], ['#8B5A2B', '#1C4A7C', '#C9A24B']),
   T('marreco', 'Marreco', 'AAAFB X de Maio', [], ['#1F6B3B', '#E8A317', '#FFFFFF']),
   T('indio', 'Índio', 'AADUP', [], ['#8B2020', '#FFFFFF', '#B0B0B0']),
-  T('lobo', 'Lobo', 'AAAMEDFB', ['sanguinaria', 'medicina'], ['#17213B', '#9BA3AC', '#FFFFFF']),
+  T('lobo', 'Sanguinária', 'AAAMEDFB', ['lobo', 'medicina'], ['#17213B', '#9BA3AC', '#FFFFFF']),
   T('predadores', 'Predadores', 'AAACHUFB', [], ['#1FB6C9', '#1A3A6B', '#5C1F6B']),
   T('devora', 'Devora', 'AAANUFB', ['nutricao'], ['#34205C', '#E8A91E', '#FFFFFF']),
 ];

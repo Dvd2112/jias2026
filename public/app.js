@@ -7,10 +7,11 @@ import {
 import { identityOf } from './teams.js';
 
 const { auth, canScore, isAdmin } = db;
-const BUILD = '2026-11-11.8';
+const BUILD = '2026-11-11.15';
 const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 const $ = id => document.getElementById(id);
 
+window.addEventListener('afterprint', () => document.body.classList.remove('printing-pb'));
 let ui = { tab: 'agenda', sport: null, ag: { sport: '', cat: '', team: '', status: 'all' }, rcat: '', ready: false, openSched: new Set(),
   tb: { by: 'gym', date: '', sport: '', cat: '', edit: false, sel: new Set(), bk: { date: '', place: '', time: '', gap: 10, shift: '' } }, pl: { extra: new Set(), date: '', start: '08:00', end: '20:00', pick: null }, seq: { date: '', time: '08:00', place: '', gap: 10, over: false } };
 
@@ -397,12 +398,49 @@ function viewKO(sp) {
   const third = R.byId.T ? `<div class="third-row"><h3>Disputa de 3º lugar</h3>${gameCard(sp, R.byId.T, { compact: true })}</div>` : '';
   const seeds = isAdmin() ? `<details class="card"><summary class="muted">Definir cabeças de chave manualmente (zera placares, mantém horários)</summary>
     <div class="seeds">${br.teams.map((t, i) => `<label class="fld">${i + 1}º<select data-seed="${i}">${br.teams.map(k => `<option value="${k}" ${k === t ? 'selected' : ''}>${esc(tn(k))}</option>`).join('')}</select></label>`).join('')}</div></details>` : '';
-  return `${podium(sp)}${seeds}<div class="bracket-wrap"><div class="bracket">${cols.join('')}</div></div>${third}`;
+  return `<div class="row noprint"><button class="btn sm" data-pbprint>🖨 Imprimir chaveamento</button></div>${printBracket(sp)}${podium(sp)}${seeds}<div class="bracket-wrap noprint"><div class="bracket">${cols.join('')}</div></div>${third}`;
+}
+/* versão para imprimir: sem horários, cada atlética na sua cor, fundo em PNG + degradê */
+function printLogo(id) {   // sem loading=lazy: o bloco fica escondido na tela e o navegador não carregaria o logo a tempo
+  if (id == null) return '<span class="tlogo ini">?</span><em>A definir</em>';
+  const i = identityOf(tn(id)), nm = `<em>${esc(i.sigla ? i.name : tn(id))}</em>`;
+  return (i.logo ? `<img class="tlogo" src="${i.logo}" alt="" width="40" height="40" decoding="sync">` : `<span class="tlogo ini" style="background:${i.primary};color:${i.ink}">${esc(i.initials)}</span>`) + nm;
+}
+function printBracket(sp) {
+  const R = resolve(sp), br = sp.bracket, cols = [];
+  const team = (m, s) => {
+    const t = m[s], show = (m.done || m.live) && m['s' + s] != null;
+    return `<div class="pt ${t == null ? 'tbd' : ''} ${m.w != null && m.w === t ? 'win' : ''}" ${teamVars(t)}><span class="pl">${printLogo(t)}</span><b>${show ? m['s' + s] : ''}</b></div>`;
+  };
+  const card = m => m.bye
+    ? `<div class="pm"><div class="pt" ${teamVars(m.w)}><span class="pl">${printLogo(m.w)}</span><b></b></div></div>`
+    : `<div class="pm">${team(m, 'a')}${team(m, 'b')}</div>`;
+  for (let r = 1; r <= br.rounds; r++) {
+    const ms = R.list.filter(m => m.round === r && !m.third), isFinal = r === br.rounds;
+    cols.push(`<section class="round ${isFinal ? 'last' : ''}"><h3>${esc(ms[0].rname)}</h3><div class="rbody">${ms.map((m, i) => `<div class="bm ${i % 2 ? 'dn' : 'up'}">${card(m)}</div>`).join('')}</div></section>`);
+  }
+  const F = R.byId[br.finalId];
+  cols.push(`<section class="round champ"><h3>Campeão</h3><div class="rbody"><div class="bm"><div class="pm champ"><div class="pt" ${teamVars(F.w)}><span class="pl">${printLogo(F.w)}</span><b></b></div></div></div></div></section>`);
+  const third = R.byId.T ? `<div class="pthird"><h3>Disputa de 3º lugar</h3>${card(R.byId.T)}</div>` : '';
+  return `<div id="pbprint" class="pbprint"><h1>JIAS 2026<small>${esc(sportLabel(sp))}</small></h1><div class="bracket">${cols.join('')}</div>${third}</div>`;
+}
+/* pontos corridos para imprimir: classificação colorida + jogos de cada rodada, só logos, sem horário */
+function printRR(sp) {
+  const R = resolve(sp), { rows } = placements(sp);
+  const rounds = [...new Set(R.list.map(m => m.round))];
+  const box = (id, score) => `<div class="pt" ${teamVars(id)}><span class="pl">${printLogo(id)}</span>${score != null ? `<b>${score}</b>` : ''}</div>`;
+  const tr = rows.map((r, i) => `<div class="prow" ${teamVars(r.id)}><span class="pn">${i + 1}º</span><span class="pl">${printLogo(r.id)}</span><b class="pp">${r.P}</b><span>${r.J}</span><span>${r.V}</span><span>${r.E}</span><span>${r.D}</span><span>${r.SG}</span></div>`).join('');
+  const rd = rounds.map(n => `<section class="prd"><h3>Rodada ${n}</h3><div class="prm">${R.list.filter(m => m.round === n).map(m => {
+    const sh = m.done || m.live;
+    return `<div class="pm">${box(m.a, sh ? m.sa : null)}${box(m.b, sh ? m.sb : null)}</div>`;
+  }).join('')}</div></section>`).join('');
+  return `<div id="pbprint" class="pbprint"><h1>JIAS 2026<small>${esc(sportLabel(sp))}</small></h1>
+    <div class="ptable"><div class="prow phead"><span class="pn">#</span><span class="pl">Atlética</span><span class="pp">Pts</span><span>J</span><span>V</span><span>E</span><span>D</span><span>SG</span></div>${tr}</div>${rd}</div>`;
 }
 function viewRR(sp) {
   const R = resolve(sp), { rows, complete } = placements(sp);
   const rounds = [...new Set(R.list.map(m => m.round))];
-  return `<div class="card"><h2>Classificação</h2><div class="scroll"><table><thead><tr><th>#</th><th>Atlética</th><th class="n">Pts</th><th class="n">J</th><th class="n">V</th><th class="n">E</th><th class="n">D</th><th class="n">SG</th></tr></thead><tbody>
+  return `<div class="row noprint"><button class="btn sm" data-pbprint>🖨 Imprimir tabela e jogos</button></div>${printRR(sp)}<div class="card noprint"><h2>Classificação</h2><div class="scroll"><table><thead><tr><th>#</th><th>Atlética</th><th class="n">Pts</th><th class="n">J</th><th class="n">V</th><th class="n">E</th><th class="n">D</th><th class="n">SG</th></tr></thead><tbody>
     ${rows.map((r, i) => `<tr class="${i === 0 && r.J > 0 ? 'first' : ''}"><td class="pos">${i + 1}</td><td>${teamTag(r.id)}</td><td class="n"><b>${r.P}</b></td><td class="n">${r.J}</td><td class="n">${r.V}</td><td class="n">${r.E}</td><td class="n">${r.D}</td><td class="n">${r.SG}</td></tr>`).join('')}
     </tbody></table></div>
     <p class="muted">Vitória ${S.config.win} · empate ${S.config.draw} · derrota ${S.config.loss}. Desempate: vitórias, saldo, gols pró.${complete ? '' : ' Os pontos da classificação geral entram quando todos os jogos terminarem.'}</p>${podium(sp)}</div>
@@ -758,6 +796,7 @@ document.addEventListener('click', async e => {
     S.config.gyms = gymList().filter(g => g !== d.gymdel); db.saveConfig();
   }
   else if (d.tbedit !== undefined) ui.tb.edit = !ui.tb.edit;
+  else if (d.pbprint !== undefined) { document.body.classList.add('printing-pb'); setTimeout(() => print(), 50); return; }
   else if (d.tbprint !== undefined) { ui.tb.edit = false; render(); setTimeout(() => print(), 50); return; }
   else if (d.tbbk !== undefined) {
     if (d.tbbk === 'apply') { applyBulk(); return; }
