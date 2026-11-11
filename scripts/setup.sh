@@ -26,9 +26,9 @@ supabase link --project-ref "$REF"
 supabase db push --linked || supabase db push --remote
 
 ANON=$(supabase projects api-keys --project-ref "$REF" -o json | python3 -c "import sys,json; print(next(k['api_key'] for k in json.load(sys.stdin) if k['name']=='anon'))")
-cat > config.js <<EOC
+cat > public/config.js <<EOC
 // Chave "anon" é pública por design: a segurança vem das políticas RLS da migration.
 export const SUPABASE_URL = 'https://$REF.supabase.co';
 export const SUPABASE_ANON_KEY = '$ANON';
 EOC
-echo "OK. config.js gerado. Agora crie os usuários: ./scripts/create-user.sh <email> <senha> admin|scorer"
+echo "OK. public/config.js gerado. Agora crie os usuários: ./scripts/create-user.sh <email> <senha> admin|scorer"

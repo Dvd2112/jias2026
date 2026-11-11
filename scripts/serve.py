@@ -9,7 +9,7 @@ class NoCache(http.server.SimpleHTTPRequestHandler):
         super().end_headers()
 
 port = int(sys.argv[1]) if len(sys.argv) > 1 else 8000
-root = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..')
+root = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'public')
 handler = functools.partial(NoCache, directory=root)
 print(f'JIAS em http://localhost:{port}  (Ctrl+C para parar)')
 http.server.ThreadingHTTPServer(('0.0.0.0', port), handler).serve_forever()

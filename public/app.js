@@ -685,7 +685,7 @@ $('loginCancel').addEventListener('click', () => $('login').close());
 (async function start() {
   render();
   if (!db.configured) {
-    $('view').innerHTML = '<div class="warn"><b>Falta configurar o Supabase.</b> Preencha a URL e a anon key em <code>config.js</code> e rode <code>scripts/setup.sh</code>.</div>';
+    $('view').innerHTML = '<div class="warn"><b>Falta configurar o Supabase.</b> Preencha a URL e a anon key em <code>public/config.js</code> e rode <code>scripts/setup.sh</code>.</div>';
     return;
   }
   await db.initAuth(() => render());

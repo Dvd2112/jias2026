@@ -7,7 +7,7 @@ cd "$(dirname "$0")/.."
 EMAIL=${1:?email}; PASS=${2:?senha}; ROLE=${3:?admin|scorer}
 [ "$ROLE" = admin ] || [ "$ROLE" = scorer ] || { echo "papel deve ser admin ou scorer"; exit 1; }
 : "${SERVICE_ROLE_KEY:?defina SERVICE_ROLE_KEY}"
-URL=$(sed -n "s/.*SUPABASE_URL = '\(.*\)'.*/\1/p" config.js)
+URL=$(sed -n "s/.*SUPABASE_URL = '\(.*\)'.*/\1/p" public/config.js)
 H=(-H "apikey: $SERVICE_ROLE_KEY" -H "Authorization: Bearer $SERVICE_ROLE_KEY" -H "Content-Type: application/json")
 UID_=$(curl -sf "${H[@]}" -X POST "$URL/auth/v1/admin/users" \
   -d "{\"email\":\"$EMAIL\",\"password\":\"$PASS\",\"email_confirm\":true}" | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")

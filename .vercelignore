@@ -1,6 +1,4 @@
-# originais pesados e arquivos do Windows: o site usa só as versões otimizadas
-assets/LOGO DAS AAA
-assets/Logo Jias
-*:Zone.Identifier
+# só vale para deploy pela CLI; no deploy via GitHub quem manda é "outputDirectory": "public" (vercel.json)
+design
 scripts
 supabase

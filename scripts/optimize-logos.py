@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
-"""Gera os logos leves usados no site a partir dos originais em assets/.
+"""Gera os logos leves usados no site a partir dos originais em design/.
 Uso: python3 scripts/optimize-logos.py      (requer Pillow e, para PDF, o pdftoppm)
-Para trocar/adicionar um logo: ponha o arquivo em assets/LOGO DAS AAA/, ajuste SRC abaixo e rode de novo."""
+Para trocar/adicionar um logo: ponha o arquivo em design/logos-aaa/, ajuste SRC abaixo e rode de novo."""
 import subprocess, tempfile, pathlib
 from PIL import Image, ImageDraw
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
-A = ROOT / 'assets'
+DESIGN = ROOT / 'design'          # originais pesados (não vão para o ar)
+OUT = ROOT / 'public' / 'assets'  # versões leves usadas pelo site
 SRC = {  # slug (mesmo de teams.js) -> arquivo original
     'corsarios': 'AAACSAUFB Corsários.PNG', 'macaco': 'AAACSUFB Macaco.png', 'urso': 'AAAD CESUL Urso.png',
     'marreco': 'AAAFB X DE MAIO Marreco.png', 'indio': 'INDIO.png', 'lobo': 'MED UNIOESTE SANGUINARIA.png',
@@ -41,16 +42,16 @@ def square(im, size, pad=0.04, bg=None):
     canvas.alpha_composite(im, ((side - im.width) // 2, (side - im.height) // 2))
     return canvas.resize((size, size), Image.LANCZOS)
 
-out = A / 'teams'; out.mkdir(exist_ok=True)
+out = OUT / 'teams'; out.mkdir(parents=True, exist_ok=True)
 for slug, fn in SRC.items():
-    square(load(A / 'LOGO DAS AAA' / fn), 256).save(out / f'{slug}.webp', quality=90, method=6)
+    square(load(DESIGN / 'logos-aaa' / fn), 256).save(out / f'{slug}.webp', quality=90, method=6)
     print('team', slug, (out / f'{slug}.webp').stat().st_size // 1024, 'KB')
 
-jias = load(A / 'Logo Jias' / 'Logo Colorido.png')
-square(jias, 512, 0.02).save(A / 'logo.webp', quality=92, method=6)
+jias = load(DESIGN / 'logo-jias' / 'Logo Colorido.png')
+square(jias, 512, 0.02).save(OUT / 'logo.webp', quality=92, method=6)
 navy = (15, 39, 68, 255)
-square(jias, 192, 0.06, navy).save(A / 'icon-192.png')
-square(jias, 512, 0.06, navy).save(A / 'icon-512.png')
-square(jias, 180, 0.06, navy).save(A / 'apple-touch-icon.png')
-square(jias, 64, 0.02).save(A / 'favicon.png')
-print('jias logo', (A / 'logo.webp').stat().st_size // 1024, 'KB')
+square(jias, 192, 0.06, navy).save(OUT / 'icon-192.png')
+square(jias, 512, 0.06, navy).save(OUT / 'icon-512.png')
+square(jias, 180, 0.06, navy).save(OUT / 'apple-touch-icon.png')
+square(jias, 64, 0.02).save(OUT / 'favicon.png')
+print('jias logo', (OUT / 'logo.webp').stat().st_size // 1024, 'KB')
