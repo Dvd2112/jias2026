@@ -82,6 +82,20 @@ export function makeBracket(sp, mode) {
   }
   return br;
 }
+// liga/desliga a disputa de 3º lugar NO LUGAR, sem sortear de novo (placares e horários dos outros jogos ficam).
+// Devolve true se mexeu no chaveamento.
+export function setThird(sp, on) {
+  const br = sp.bracket; if (!br || br.format !== 'knockout') return false;
+  br.third = !!on;
+  const has = br.defs.some(d => d.id === 'T');
+  if (on && !has && br.teams.length >= 4) {
+    br.defs.push({ id: 'T', round: br.rounds, rname: 'Final', label: 'Disputa de 3º lugar', third: true, a: { l: `K${br.rounds - 1}_0` }, b: { l: `K${br.rounds - 1}_1` } });
+    br.hasThird = true;
+  } else if (!on && has) {
+    br.defs = br.defs.filter(d => d.id !== 'T'); delete br.m.T; br.hasThird = false;
+  } else return false;
+  return true;
+}
 export function isStale(sp) {
   const br = sp.bracket; if (!br) return false;
   const a = [...sp.enrolled].sort().join(), b = [...br.teams].sort().join();

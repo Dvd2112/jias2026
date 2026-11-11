@@ -2,17 +2,17 @@ import * as db from './db.js';
 import {
   S, getTeam, getSport, tn, fmt, newId, makeBracket, buildKO, isStale, resolve, standings, placements,
   totals, patchMatch, clearScoreFields, clearScheduleFields, CATS, sportLabel, catShort, pickFeatured, schedTs,
-  minutesOf, findConflicts, planSequence, span, fmtClock, normPlace,
+  minutesOf, setThird, findConflicts, planSequence, span, fmtClock, fmtDay, normPlace,
 } from './logic.js';
 import { identityOf } from './teams.js';
 
 const { auth, canScore, isAdmin } = db;
-const BUILD = '2026-11-11.1';
+const BUILD = '2026-11-11.5';
 const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 const $ = id => document.getElementById(id);
 
 let ui = { tab: 'agenda', sport: null, ag: { sport: '', cat: '', status: 'all' }, rcat: '', ready: false, openSched: new Set(),
-  tb: { by: 'gym', date: '' }, seq: { date: '', time: '08:00', place: '', gap: 10, over: false } };
+  tb: { by: 'gym', date: '', sport: '', cat: '', edit: false, sel: new Set(), bk: { date: '', place: '', time: '', gap: 10, shift: '' } }, pl: { extra: new Set(), date: '', start: '08:00', end: '18:00', step: 40, pick: null }, seq: { date: '', time: '08:00', place: '', gap: 10, over: false } };
 
 /* ---------- avisos ---------- */
 let toastT;
@@ -177,17 +177,20 @@ const ICONS = {
   sport: svg('<path d="M3 4h6v5H3zM3 15h6v5H3zM15 9.5h6v5h-6z"/><path d="M9 6.5h3v11H9m3-5.5h3"/>'),
   rank: svg('<path d="M3 21h18M5 21v-7h4v7M10 21V6h4v15M15 21v-10h4v10"/>'),
   table: svg('<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 10h18M3 15h18M9 4v16"/>'),
+  plan: svg('<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M8 9v11M14 9v11M5.5 14h0M11 14h0M17 14h0"/>'),
   cfg: svg('<path d="M4 7h10M18 7h2M4 17h2M10 17h10"/><circle cx="16" cy="7" r="2"/><circle cx="8" cy="17" r="2"/>'),
 };
 const focusKey = el => el.tagName + '|' + el.getAttributeNames().filter(n => n.startsWith('data-')).map(n => n + '=' + el.getAttribute(n)).join('&');
 function render() {
   if (!getSport(ui.sport)) ui.sport = S.sports[0] && S.sports[0].id;
+  if (ui.tab === 'plan' && !canScore()) ui.tab = 'agenda';
   if (ui.tab === 'cfg' && !isAdmin()) ui.tab = 'agenda';
   const v = $('view');
   const ae = document.activeElement;
   const ak = ae && v.contains(ae) && /^(INPUT|SELECT)$/.test(ae.tagName) && ae.getAttributeNames().some(n => n.startsWith('data-')) ? focusKey(ae) : null;
   const scroll = window.scrollY;
   const tabs = [['agenda', 'Jogos'], ['table', 'Tabela'], ['sport', 'Chaves'], ['rank', 'Ranking']];
+  if (canScore()) tabs.push(['plan', 'Horários']);
   if (isAdmin()) tabs.push(['cfg', 'Ajustes']);
   $('tabs').innerHTML = tabs.map(([id, l]) => `<button class="${ui.tab === id ? 'on' : ''}" data-tab="${id}" ${ui.tab === id ? 'aria-current="page"' : ''}><span class="ic">${ICONS[id]}</span><span class="lb">${l}</span></button>`).join('');
   $('who').innerHTML = auth.user
@@ -196,10 +199,10 @@ function render() {
   if (!ui.ready) { v.innerHTML = '<div class="boot"><img src="assets/logo.webp" alt="JIAS 2026" width="140" height="140"><p class="muted">Carregando…</p></div>'; return; }
   const outdated = db.state.outdated && canScore()
     ? `<div class="warn sticky"><b>Banco de dados desatualizado.</b> O que você alterar <u>não será salvo</u>. Rode no terminal, dentro da pasta do projeto: <code>supabase db push --linked</code> (ou cole os arquivos de <code>supabase/migrations</code> no SQL Editor do Supabase) e recarregue.</div>` : '';
-  v.innerHTML = outdated + { agenda: viewAgenda, table: viewTable, sport: viewSport, rank: viewRank, cfg: viewCfg }[ui.tab]();
+  v.innerHTML = outdated + { agenda: viewAgenda, table: viewTable, sport: viewSport, rank: viewRank, plan: viewPlan, cfg: viewCfg }[ui.tab]();
   if (ak) { const el = [...v.querySelectorAll('input,select')].find(x => focusKey(x) === ak); if (el) el.focus({ preventScroll: true }); }
   window.scrollTo(0, scroll);
-  const places = [...new Set(S.sports.flatMap(s => s.bracket ? Object.values(s.bracket.m).map(r => (r.place || '').trim()).filter(Boolean) : []))].sort();
+  const places = [...new Set([...(S.config.gyms || []), ...S.sports.flatMap(s => s.bracket ? Object.values(s.bracket.m).map(r => (r.place || '').trim()).filter(Boolean) : [])])].sort();
   v.insertAdjacentHTML('beforeend', `<datalist id="places">${places.map(p => `<option value="${esc(p)}">`).join('')}</datalist><p class="muted center build">versão ${BUILD}</p>`);
   tickClocks();
   celebrate();
@@ -405,50 +408,195 @@ function viewRR(sp) {
     ${rounds.map(r => `<h2 class="sec">Rodada ${r}</h2><div class="cards">${R.list.filter(m => m.round === r).map(m => gameCard(sp, m)).join('')}</div>`).join('')}`;
 }
 
-/* ----- Tabela: ordem dos jogos por ginásio ou por modalidade ----- */
-function viewTable() {
+/* ----- Tabela: ordem dos jogos por ginásio ou por modalidade; edição em lote e impressão filtrada ----- */
+const rowKey = (sp, m) => sp.id + '|' + m.id;
+function tableRows() {
   const T = ui.tb, all = [];
   S.sports.forEach(sp => { const R = resolve(sp); if (R) R.list.filter(m => !m.bye).forEach(m => all.push({ sp, m })); });
+  const startOf = ({ sp, m }) => { const t = span(sp, m); return t ? t.start : (m.rec.date ? schedTs(m.rec) : null); };
+  const rows = all.filter(({ sp, m }) => (!T.sport || sp.name === T.sport) && (!T.cat || sp.category === T.cat)
+    && (!T.date || (T.date === '-' ? !m.rec.date : m.rec.date === T.date)));
+  rows.sort((x, y) => (startOf(x) ?? 9e15) - (startOf(y) ?? 9e15) || S.sports.indexOf(x.sp) - S.sports.indexOf(y.sp) || x.m.round - y.m.round);
+  return { all, rows };
+}
+function viewTable() {
+  const T = ui.tb, { all, rows } = tableRows();
   if (!all.length) return '<p class="empty">O chaveamento ainda não foi sorteado.</p>';
+  const edit = T.edit && canScore();
   const dates = [...new Set(all.map(({ m }) => m.rec.date).filter(Boolean))].sort();
   const conf = canScore() ? findConflicts(all) : {};   // conflitos só aparecem para quem organiza
-  const rows = all.filter(({ m }) => !T.date || (T.date === '-' ? !m.rec.date : m.rec.date === T.date));
-  const startOf = ({ sp, m }) => { const t = span(sp, m); return t ? t.start : (m.rec.date ? schedTs(m.rec) : null); };
-  rows.sort((x, y) => (startOf(x) ?? 9e15) - (startOf(y) ?? 9e15) || S.sports.indexOf(x.sp) - S.sports.indexOf(y.sp) || x.m.round - y.m.round);
+  const gym = T.by === 'gym';
 
   const groups = new Map();
   rows.forEach(r => {
-    const k = T.by === 'gym' ? (normPlace(r.m.rec.place) || '~') : r.sp.id;
-    if (!groups.has(k)) groups.set(k, { k, title: T.by === 'gym' ? (r.m.rec.place || '').trim() || 'Sem ginásio definido' : sportLabel(r.sp), sp: r.sp, rows: [] });
+    const k = gym ? (normPlace(r.m.rec.place) || '~') : r.sp.id;
+    if (!groups.has(k)) groups.set(k, { k, title: gym ? (r.m.rec.place || '').trim() || 'Sem ginásio definido' : sportLabel(r.sp), sp: r.sp, rows: [] });
     groups.get(k).rows.push(r);
   });
-  const list = [...groups.values()].sort((a, b) => T.by === 'gym'
+  const list = [...groups.values()].sort((a, b) => gym
     ? (a.k === '~') - (b.k === '~') || a.title.localeCompare(b.title)
     : S.sports.indexOf(a.sp) - S.sports.indexOf(b.sp));
 
   const body = g => {
     let html = '', last = null, n = 0;
     g.rows.forEach(({ sp, m }) => {
-      const d = m.rec.date || '';
-      if (d !== last) { html += `<tr class="dayrow"><td colspan="7">${d ? esc(fmtDate(d)) : 'Sem data definida'}</td></tr>`; last = d; n = 0; }
+      const d = m.rec.date || '', k = rowKey(sp, m);
+      if (d !== last) { html += `<tr class="dayrow"><td colspan="${edit ? 8 : 7}">${d ? esc(fmtDate(d)) : 'Sem data definida'}</td></tr>`; last = d; n = 0; }
       n++;
       const t = span(sp, m), c = conf[sp.id + m.id];
-      const time = t ? `<b>${esc(m.rec.time)}</b><span class="end"> – ${fmtClock(t.end)}</span>` : (m.rec.time ? `<b>${esc(m.rec.time)}</b>` : '<span class="muted">—</span>');
-      const where = T.by === 'gym' ? `${esc(sp.name)} <span class="cat ${sp.category}">${CATS[sp.category]}</span>` : (esc(m.rec.place) || '<span class="muted">—</span>');
+      let time, where;
+      if (edit) {
+        time = `<input type="date" class="ti" ${ids(sp, m)} data-mf="date" value="${esc(m.rec.date || '')}" aria-label="Data"><input type="time" class="ti" ${ids(sp, m)} data-mf="time" value="${esc(m.rec.time || '')}" aria-label="Hora">${t ? `<span class="end"> – ${fmtClock(t.end)}</span>` : ''}`;
+        where = `<input type="text" class="ti pl" list="places" ${ids(sp, m)} data-mf="place" value="${esc(m.rec.place || '')}" placeholder="Ginásio" aria-label="Ginásio"><div class="small">${esc(sp.name)} <span class="cat ${sp.category}">${CATS[sp.category]}</span></div>`;
+      } else {
+        time = t ? `<b>${esc(m.rec.time)}</b><span class="end"> – ${fmtClock(t.end)}</span>` : (m.rec.time ? `<b>${esc(m.rec.time)}</b>` : '<span class="muted">—</span>');
+        where = gym ? `${esc(sp.name)} <span class="cat ${sp.category}">${CATS[sp.category]}</span>` : (esc(m.rec.place) || '<span class="muted">—</span>');
+      }
       const score = (m.live || m.done) && m.sa != null && m.sb != null ? `<b>${m.sa} × ${m.sb}</b>${m.wo ? ' <span class="wobadge">WO</span>' : ''}` : '<span class="muted">—</span>';
-      html += `<tr class="${m.live ? 'live' : ''} ${m.done ? 'done' : ''}"><td class="pos c-pos">${n}</td><td class="tm c-tm">${time}</td><td class="c-wh">${where}</td><td class="c-fa">${esc(m.label)}</td>
+      html += `<tr class="${m.live ? 'live' : ''} ${m.done ? 'done' : ''}">${edit ? `<td class="c-sel noprint"><input type="checkbox" data-tbsel="${k}" ${T.sel.has(k) ? 'checked' : ''} aria-label="Selecionar jogo"></td>` : ''}<td class="pos c-pos">${n}</td><td class="tm c-tm">${time}</td><td class="c-wh">${where}</td><td class="c-fa">${esc(m.label)}</td>
         <td class="vs c-vs"><span class="vsw">${teamTag(m.a)}<i>×</i>${teamTag(m.b)}</span></td><td class="n c-sc">${score}</td>
         <td class="c-st">${statusBadge(m)}${c ? ` <span class="conf-ic" title="Conflito: ${esc([...c].join(', '))}">⚠ conflito</span>` : ''}</td></tr>`;
     });
     return html;
   };
+  const chip = (attr, cur, opts) => `<div class="chips tbchips">${opts.map(([v, l]) => `<button class="${cur === v ? 'on' : ''}" ${attr}="${esc(v)}">${esc(l)}</button>`).join('')}</div>`;
+  const names = [...new Set(S.sports.map(s => s.name))];
   const seg = [['gym', 'Por ginásio'], ['sport', 'Por modalidade']].map(([v, l]) => `<button class="${T.by === v ? 'on' : ''}" data-tby="${v}">${l}</button>`).join('');
-  const dateSel = `<select data-tbdate><option value="">Todos os dias</option>${dates.map(d => `<option value="${d}" ${T.date === d ? 'selected' : ''}>${esc(fmtDate(d))}</option>`).join('')}<option value="-" ${T.date === '-' ? 'selected' : ''}>Sem data</option></select>`;
-  const cards = list.map(g => `<section class="card tbl"><h2>${esc(g.title)}${T.by === 'sport' ? ` <small>· duração média ${minutesOf(g.sp)} min</small>` : ''}</h2>
-    <div class="scroll"><table class="sched"><thead><tr><th>#</th><th>Horário</th><th>${T.by === 'gym' ? 'Modalidade' : 'Ginásio'}</th><th>Fase</th><th>Jogo</th><th class="n">Placar</th><th>Situação</th></tr></thead><tbody>${body(g)}</tbody></table></div></section>`).join('');
-  return `<div class="tbhead"><div class="seg" role="group" aria-label="Agrupar">${seg}</div>${dateSel}<button class="btn alt sm" onclick="print()">Imprimir</button></div>
-    ${cards || '<p class="empty">Nenhum jogo nesse dia.</p>'}
-    <p class="muted">Ordem por data e horário. O horário final é o início mais a duração média da modalidade${canScore() ? '; conflitos = jogos que se sobrepõem no mesmo ginásio ou com a mesma atlética' : ''}.</p>`;
+  const dateSel = `<select data-tbdate aria-label="Dia"><option value="">Todos os dias</option>${dates.map(d => `<option value="${d}" ${T.date === d ? 'selected' : ''}>${esc(fmtDate(d))}</option>`).join('')}<option value="-" ${T.date === '-' ? 'selected' : ''}>Sem data</option></select>`;
+  const cards = list.map(g => `<section class="card tbl"><h2>${esc(g.title)}${!gym ? ` <small>· duração média ${minutesOf(g.sp)} min</small>` : ''}</h2>
+    <div class="scroll"><table class="sched"><thead><tr>${edit ? `<th class="noprint"><input type="checkbox" data-tbselgrp="${esc(g.k)}" ${g.rows.every(({ sp, m }) => T.sel.has(rowKey(sp, m))) ? 'checked' : ''} aria-label="Selecionar todos deste grupo"></th>` : ''}<th>#</th><th>Horário</th><th>${gym ? 'Modalidade' : 'Ginásio'}</th><th>Fase</th><th>Jogo</th><th class="n">Placar</th><th>Situação</th></tr></thead><tbody>${body(g)}</tbody></table></div></section>`).join('');
+
+  // título que aparece só na impressão, dizendo exatamente o que foi filtrado
+  const what = [T.sport || 'Todas as modalidades', T.cat ? CATS[T.cat] : 'Masculino e feminino', T.date ? (T.date === '-' ? 'Sem data' : fmtDate(T.date)) : 'Todos os dias'].join(' · ');
+  const selN = [...T.sel].filter(k => rows.some(({ sp, m }) => rowKey(sp, m) === k)).length;
+  const bulk = edit ? `<details class="card seq noprint" data-sk="tbbulk" ${ui.openSched.has('tbbulk') ? 'open' : ''}><summary>⚙ Ajustar horários em lote (${selN} selecionado${selN === 1 ? '' : 's'})</summary>
+    <p class="muted">Marque os jogos na tabela (ou use ${rows.length} filtrados abaixo) e aplique. Só os campos preenchidos são alterados.</p>
+    <div class="grid2">
+      <label class="fld">Data<input type="date" data-bk="date" value="${esc(T.bk.date)}"></label>
+      <label class="fld">Ginásio<input type="text" list="places" data-bk="place" value="${esc(T.bk.place)}" placeholder="Ginásio 1"></label>
+      <label class="fld">Primeiro jogo às<input type="time" data-bk="time" value="${esc(T.bk.time)}"></label>
+      <label class="fld">Intervalo entre jogos (min)<input type="number" min="0" max="120" data-bk="gap" value="${T.bk.gap}"></label>
+      <label class="fld">Adiantar / atrasar (min)<input type="number" step="5" data-bk="shift" value="${T.bk.shift}" placeholder="ex.: 30 ou -15"></label></div>
+    <div class="row"><button class="btn" data-tbbk="apply" ${selN ? '' : 'disabled'}>Aplicar a ${selN} selecionado(s)</button>
+      <button class="btn alt" data-tbbk="all">Selecionar os ${rows.length} filtrados</button><button class="btn alt" data-tbbk="none">Desmarcar</button>
+      <button class="btn alt" data-clr="sel" ${selN ? '' : 'disabled'}>🧹 Limpar horário e local dos selecionados</button></div>
+    <p class="muted">"Primeiro jogo às" encadeia os selecionados na ordem da tabela (duração média + intervalo). "Adiantar/atrasar" soma minutos ao horário atual de cada um.</p></details>` : '';
+  return `<div class="tbhead noprint"><div class="seg" role="group" aria-label="Agrupar">${seg}</div>${dateSel}
+      ${canScore() ? `<button class="btn alt sm ${T.edit ? 'on' : ''}" data-tbedit>${T.edit ? '✔ Editando horários' : '✎ Editar horários'}</button>` : ''}
+      <button class="btn sm" data-tbprint>🖨 Imprimir${T.sport || T.cat || T.date ? ' (filtrado)' : ''}</button></div>
+    <div class="noprint">${chip('data-tbsport', T.sport, [['', 'Todas as modalidades'], ...names.map(n => [n, n])])}${chip('data-tbcat', T.cat, [['', 'Masc. + Fem.'], ['masculino', 'Masculino'], ['feminino', 'Feminino']])}</div>
+    ${bulk}
+    <h1 class="printonly">JIAS 2026 — Tabela de jogos<small>${esc(what)}</small></h1>
+    ${cards || '<p class="empty">Nenhum jogo com esses filtros.</p>'}
+    <p class="muted noprint">Ordem por data e horário. O horário final é o início mais a duração média da modalidade${canScore() ? '; conflitos = jogos que se sobrepõem no mesmo ginásio ou com a mesma atlética' : ''}.</p>`;
+}
+// aplica o ajuste em lote aos jogos selecionados (na ordem da tabela)
+function applyBulk() {
+  const T = ui.tb, b = T.bk, { rows } = tableRows();
+  const sel = rows.filter(({ sp, m }) => T.sel.has(rowKey(sp, m)));
+  if (!sel.length) return toast('Selecione ao menos um jogo.', true);
+  const shift = Math.round(Number(b.shift) || 0), seq = !!b.time;
+  if (!b.date && !b.place && !seq && !shift) return toast('Preencha algum campo para aplicar.', true);
+  if (seq && !(b.date || sel.every(({ m }) => m.rec.date))) return toast('Para encadear horários, informe a data.', true);
+  const bySport = new Map();
+  let t = seq ? new Date(`${b.date || sel[0].m.rec.date}T${b.time}`).getTime() : null;
+  if (seq && isNaN(t)) return toast('Horário inválido.', true);
+  sel.forEach(({ sp, m }) => {
+    const patch = {}, put = (f, v) => Object.assign(patch, patchMatch(sp, m.id, f, v));
+    if (b.place) put('place', b.place);
+    if (seq) { put('date', fmtDay(t)); put('time', fmtClock(t)); t += (minutesOf(sp) + Math.max(0, Number(b.gap) || 0)) * 60000; }
+    else {
+      if (b.date) put('date', b.date);
+      if (shift) {
+        const r = m.rec; if (!(b.date || r.date) || !r.time) return;   // sem horário não há o que deslocar
+        const ts = new Date(`${b.date || r.date}T${r.time}`).getTime() + shift * 60000;
+        put('date', fmtDay(ts)); put('time', fmtClock(ts));
+      }
+    }
+    if (!bySport.has(sp.id)) bySport.set(sp.id, []);
+    bySport.get(sp.id).push({ id: m.id, ...patch });
+  });
+  render(); toast(`${sel.length} jogo(s) ajustado(s).`);
+  bySport.forEach((list, id) => db.saveMatches(id, list));
+}
+
+/* ----- Horários: grade vazia (horário × ginásio) em que se escolhe modalidade → categoria → jogo ----- */
+const gymList = () => (S.config.gyms || []);
+function viewPlan() {
+  const P = ui.pl, all = [];
+  S.sports.forEach(sp => { const R = resolve(sp); if (R) R.list.filter(m => !m.bye).forEach(m => all.push({ sp, m })); });
+  const days = [...new Set([...(S.config.days || []), ...P.extra, ...all.map(({ m }) => m.rec.date).filter(Boolean)])].sort();
+  if (!P.date || !days.includes(P.date)) P.date = days.includes(P.date) ? P.date : (days[0] || '');
+  const day = all.filter(({ m }) => m.rec.date === P.date);
+  const regs = gymList(), known = new Set(regs.map(normPlace));
+  const gyms0 = () => gyms;
+  const dayAdd = () => `<div class="row"><input type="date" id="newDay" aria-label="Novo dia"><button class="btn sm" data-dayadd>+ Adicionar dia</button></div>`;
+  const extra = [...new Set(day.map(({ m }) => (m.rec.place || '').trim()).filter(p => p && !known.has(normPlace(p))))];
+  const cols = [...regs, ...extra];
+  const gyms = isAdmin() ? `<div class="card noprint"><h2>Ginásios cadastrados</h2>
+    <div class="row">${regs.map(g => `<span class="pill">${esc(g)} <button class="link" data-gymdel="${esc(g)}" title="Remover" aria-label="Remover ${esc(g)}">✕</button></span>`).join('') || '<span class="muted">Nenhum ainda.</span>'}</div>
+    <div class="row"><input id="newGym" placeholder="Ex.: Ginásio 1" aria-label="Novo ginásio"><button class="btn sm" data-gymadd>Adicionar</button></div></div>` : '';
+  if (!P.date) {
+    return `${gyms0()}<div class="card"><h2>Dias do evento</h2><p class="muted">Adicione o primeiro dia para montar a grade.</p>${dayAdd()}</div>`;
+  }
+  if (!cols.length) return `${gyms}<p class="empty">${isAdmin() ? 'Cadastre ao menos um ginásio acima para montar a grade.' : 'Peça ao administrador para cadastrar os ginásios.'}</p>`;
+
+  const toMin = t => { const [h, m] = (t || '0:0').split(':').map(Number); return h * 60 + m; };
+  const clock = n => `${pad(Math.floor(n / 60) % 24)}:${pad(n % 60)}`, pad = n => String(n).padStart(2, '0');
+  const times = new Set(); for (let t = toMin(P.start); t <= toMin(P.end); t += Math.max(5, P.step)) times.add(clock(t));
+  day.forEach(({ m }) => m.rec.time && times.add(m.rec.time));
+  const conf = findConflicts(all);
+  const here = (t, g) => day.filter(({ m }) => m.rec.time === t && normPlace(m.rec.place) === normPlace(g));
+
+  const pickUI = () => {
+    const k = P.pick, names = [...new Set(S.sports.map(x => x.name))];
+    const cats = S.sports.filter(x => x.name === k.sport).map(x => x.category);
+    const sp = S.sports.find(x => x.name === k.sport && x.category === k.cat);
+    const R = sp && resolve(sp);
+    const games = R ? R.list.filter(m => !m.bye && !(m.rec.date && m.rec.time)).sort((a, b) => a.round - b.round || a.id.localeCompare(b.id, undefined, { numeric: true })) : [];
+    const opt = (v, l, cur) => `<option value="${esc(v)}" ${cur === v ? 'selected' : ''}>${esc(l)}</option>`;
+    return `<div class="pick"><select data-plp="sport" aria-label="Modalidade">${opt('', '1. Modalidade…', k.sport)}${names.map(n => opt(n, n, k.sport)).join('')}</select>
+      ${k.sport ? `<select data-plp="cat" aria-label="Categoria">${opt('', '2. Masc. ou Fem.…', k.cat)}${cats.map(c => opt(c, CATS[c], k.cat)).join('')}</select>` : ''}
+      ${sp ? (games.length ? `<select data-plp="game" aria-label="Jogo">${opt('', '3. Jogo…', '')}${games.map(m => opt(m.id, `${m.label}: ${tn(m.a) || 'A definir'} × ${tn(m.b) || 'A definir'}`, '')).join('')}</select>` : '<span class="muted">Sem jogos livres aqui.</span>') : ''}
+      <button class="link" data-plx>cancelar</button></div>`;
+  };
+  const cell = (t, g) => {
+    const items = here(t, g), k = P.pick;
+    const games = items.map(({ sp, m }) => { const c = conf[sp.id + m.id];
+      return `<div class="pg ${sp.category}"><b>${esc(sp.name)}</b> <span class="cat ${sp.category}">${catShort(sp.category)}</span><br><small>${esc(m.label)}</small><br>${esc(tn(m.a) || 'A definir')} × ${esc(tn(m.b) || 'A definir')}
+        ${c ? `<br><span class="conf-ic" title="${esc([...c].join(', '))}">⚠ conflito</span>` : ''}<button class="link noprint" ${ids(sp, m)} data-plrm title="Tirar da grade" aria-label="Tirar da grade">✕</button></div>`; }).join('');
+    const open = k && k.time === t && normPlace(k.gym) === normPlace(g);
+    return `<td class="pc">${games}${open ? pickUI() : `<button class="plus noprint" data-plgo data-pt="${t}" data-pg="${esc(g)}" aria-label="Adicionar jogo às ${t} em ${esc(g)}">+</button>`}</td>`;
+  };
+  const num = (f, l, a = '') => `<label class="fld">${l}<input ${a} data-pl="${f}" value="${esc(P[f])}"></label>`;
+  return `${gyms}<div class="card noprint"><h2>Dias</h2><div class="chips daychips">${days.map(d => `<button class="${P.date === d ? 'on' : ''}" data-plday="${d}">${esc(new Date(+d.slice(0, 4), +d.slice(5, 7) - 1, +d.slice(8)).toLocaleDateString('pt-BR', { weekday: 'short', day: '2-digit', month: '2-digit' }))}</button>`).join('')}</div>
+    ${dayAdd()}${(S.config.days || []).includes(P.date) && !day.length && isAdmin() ? `<div class="row"><button class="btn sm alt" data-daydel="${P.date}">Remover este dia (vazio)</button></div>` : ''}
+    <div class="grid2">
+      ${num('start', 'Primeiro horário', 'type="time"')}${num('end', 'Último horário', 'type="time"')}${num('step', 'Passo (min)', 'type="number" min="5" max="240" step="5"')}</div>
+    <div class="row"><button class="btn sm" data-tbprint-pl>🖨 Imprimir esta grade</button>
+      <button class="btn sm alt" data-clr="day">🧹 Limpar horários e local deste dia</button><button class="btn sm alt" data-clr="all">🧹 Limpar de todos os jogos</button></div></div>
+  <h1 class="printonly">JIAS 2026 — Horários<small>${esc(fmtDate(P.date))}</small></h1>
+  <section class="card tbl"><h2>${esc(fmtDate(P.date))}</h2><div class="scroll"><table class="sched plan"><thead><tr><th>Hora</th>${cols.map(g => `<th>${esc(g)}</th>`).join('')}</tr></thead>
+    <tbody>${[...times].sort().map(t => `<tr><td class="tm"><b>${t}</b></td>${cols.map(g => cell(t, g)).join('')}</tr>`).join('')}</tbody></table></div></section>
+  <p class="muted noprint">Toque em <b>+</b>, escolha a modalidade, depois Masculino/Feminino e então o jogo. Só aparecem jogos que ainda não têm horário. Para trocar, tire o jogo (✕) e escolha outro.</p>`;
+}
+// limpa data, hora e local de uma lista de jogos [{sp,m}] (placares ficam)
+async function clearSchedFor(items, what) {
+  const list = items.filter(({ m }) => m.rec && (m.rec.date || m.rec.time || m.rec.place));
+  if (!list.length) return toast('Nenhum jogo com horário ou local para limpar.', true);
+  if (!(await askConfirm(`Limpar data, hora e local de ${list.length} jogo(s) ${what}?\n\nOs placares são mantidos.`))) return;
+  const by = new Map();
+  list.forEach(({ sp, m }) => { const p = patchMatch(sp, m.id, 'clearsched'); if (!by.has(sp.id)) by.set(sp.id, []); by.get(sp.id).push({ id: m.id, ...p }); });
+  ui.pl.pick = null; render(); toast(`${list.length} jogo(s) limpo(s).`);
+  by.forEach((l, id) => db.saveMatches(id, l));
+}
+const allItems = () => S.sports.flatMap(sp => { const R = resolve(sp); return R ? R.list.filter(m => !m.bye).map(m => ({ sp, m })) : []; });
+function placeGame(spName, cat, mid, date, time, gym) {
+  const sp = S.sports.find(x => x.name === spName && x.category === cat); if (!sp) return;
+  const patch = {}; [['date', date], ['time', time], ['place', gym]].forEach(([f, v]) => Object.assign(patch, patchMatch(sp, mid, f, v)));
+  ui.pl.pick = null; render(); db.saveMatches(sp.id, [{ id: mid, ...patch }]);
+  const c = findConflicts(S.sports.flatMap(x => { const R = resolve(x); return R ? R.list.filter(m => !m.bye).map(m => ({ sp: x, m })) : []; }))[sp.id + mid];
+  toast(c ? `Atenção: conflito (${[...c].join(', ')})` : 'Jogo colocado na grade.', !!c);
 }
 
 /* ----- Ranking / Ajustes ----- */
@@ -532,6 +680,42 @@ document.addEventListener('click', async e => {
   else if (d.sname !== undefined) { const nx = S.sports.find(s => s.name === d.sname && s.category === sp.category) || S.sports.find(s => s.name === d.sname); if (nx) ui.sport = nx.id; }
   else if (d.rcat !== undefined) ui.rcat = d.rcat;
   else if (d.tby !== undefined) ui.tb.by = d.tby;
+  else if (d.tbsport !== undefined) ui.tb.sport = d.tbsport;
+  else if (d.tbcat !== undefined) ui.tb.cat = d.tbcat;
+  else if (d.clr !== undefined) {
+    const all = allItems();
+    if (d.clr === 'day') await clearSchedFor(all.filter(({ m }) => m.rec.date === ui.pl.date), 'de ' + fmtDate(ui.pl.date));
+    else if (d.clr === 'all') await clearSchedFor(all, 'de todas as modalidades');
+    else await clearSchedFor(tableRows().rows.filter(({ sp, m }) => ui.tb.sel.has(rowKey(sp, m))), 'selecionados');
+    return;
+  }
+  else if (d.plday !== undefined) { ui.pl.date = d.plday; ui.pl.pick = null; }
+  else if (d.dayadd !== undefined) {
+    const v = $('newDay').value; if (!v) return toast('Escolha a data.', true);
+    if (isAdmin()) { S.config.days = [...new Set([...(S.config.days || []), v])]; db.saveConfig(); } else ui.pl.extra.add(v);
+    ui.pl.date = v; ui.pl.pick = null;
+  }
+  else if (d.daydel !== undefined) { S.config.days = (S.config.days || []).filter(x => x !== d.daydel); ui.pl.date = ''; db.saveConfig(); }
+  else if (d.plgo !== undefined) ui.pl.pick = { time: d.pt, gym: d.pg, sport: '', cat: '' };
+  else if (d.plx !== undefined) ui.pl.pick = null;
+  else if (d.plrm !== undefined) setMatch(d.sp, d.m, 'clearsched');
+  else if (d.tbprintPl !== undefined) { ui.pl.pick = null; render(); setTimeout(() => print(), 50); return; }
+  else if (d.gymadd !== undefined) {
+    const n = $('newGym').value.trim().replace(/\s+/g, ' '); if (!n) return;
+    if (gymList().some(g => normPlace(g) === normPlace(n))) return toast('Esse ginásio já existe.', true);
+    S.config.gyms = [...gymList(), n]; db.saveConfig();
+  }
+  else if (d.gymdel !== undefined) {
+    if (!(await askConfirm(`Remover o ginásio "${d.gymdel}" da lista? Jogos já marcados nele continuam com esse local.`))) return;
+    S.config.gyms = gymList().filter(g => g !== d.gymdel); db.saveConfig();
+  }
+  else if (d.tbedit !== undefined) ui.tb.edit = !ui.tb.edit;
+  else if (d.tbprint !== undefined) { ui.tb.edit = false; render(); setTimeout(() => print(), 50); return; }
+  else if (d.tbbk !== undefined) {
+    if (d.tbbk === 'apply') { applyBulk(); return; }
+    if (d.tbbk === 'none') ui.tb.sel.clear();
+    else tableRows().rows.forEach(({ sp, m }) => ui.tb.sel.add(rowKey(sp, m)));
+  }
   else if (d.login !== undefined) { $('login').showModal(); return; }
   else if (d.logout !== undefined) { await db.signOut(); return; }
   else if (d.bump) {
@@ -628,9 +812,28 @@ document.addEventListener('change', async e => {
   else if (d.wocfg !== undefined) { S.config[d.wocfg] = Math.max(d.wocfg === 'woGoals' ? 1 : 0, Math.floor(Number(el.value) || 0)); db.saveConfig(); }
   else if (d.seq !== undefined) ui.seq[d.seq] = d.seq === 'over' ? el.checked : d.seq === 'gap' ? Math.max(0, Number(el.value) || 0) : el.value;
   else if (d.tbdate !== undefined) ui.tb.date = el.value;
+  else if (d.pl !== undefined) { ui.pl[d.pl] = d.pl === 'step' ? Math.max(5, Number(el.value) || 40) : el.value; ui.pl.pick = null; }
+  else if (d.plp !== undefined) {
+    const k = ui.pl.pick; if (!k) return;
+    if (d.plp === 'sport') { k.sport = el.value; k.cat = (S.sports.filter(x => x.name === k.sport).length === 1) ? S.sports.find(x => x.name === k.sport).category : ''; }
+    else if (d.plp === 'cat') k.cat = el.value;
+    else if (d.plp === 'game') { if (el.value) { placeGame(k.sport, k.cat, el.value, ui.pl.date, k.time, k.gym); return; } }
+  }
+  else if (d.bk !== undefined) { ui.tb.bk[d.bk] = el.value; return; }
+  else if (d.tbsel !== undefined) { el.checked ? ui.tb.sel.add(d.tbsel) : ui.tb.sel.delete(d.tbsel); }
+  else if (d.tbselgrp !== undefined) {
+    const grp = tableRows().rows.filter(({ sp, m }) => (ui.tb.by === 'gym' ? (normPlace(m.rec.place) || '~') : sp.id) === d.tbselgrp);
+    grp.forEach(({ sp, m }) => el.checked ? ui.tb.sel.add(rowKey(sp, m)) : ui.tb.sel.delete(rowKey(sp, m)));
+  }
   else if (d.scoring !== undefined) { sp.scoring = el.value; db.saveSport(sp); }
   else if (d.bestof !== undefined) { sp.best_of = Number(el.value) === 5 ? 5 : 3; db.saveSport(sp); }
-  else if (d.third !== undefined) { sp.third = el.checked; db.saveSport(sp); }
+  else if (d.third !== undefined) {
+    sp.third = el.checked; db.saveSport(sp);
+    if (sp.bracket && setThird(sp, sp.third)) {
+      db.saveBracketStructure(sp, sp.third ? [] : ['T']);
+      toast(sp.third ? 'Disputa de 3º lugar adicionada (sem sortear de novo).' : 'Disputa de 3º lugar removida (sem sortear de novo).');
+    }
+  }
   else if (d.double !== undefined) { sp.double = el.checked; db.saveSport(sp); }
   else if (d.seed !== undefined) {
     const br = sp.bracket, i = Number(d.seed), v = el.value, j = br.teams.indexOf(v);

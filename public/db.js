@@ -116,3 +116,11 @@ export const clearSchedule = spId =>
   run(sb.from('match_results').update({ date: null, time: null, place: null }).eq('sport_id', spId));
 export const clearScores = spId =>
   run(sb.from('match_results').update({ sa: null, sb: null, pa: null, pb: null, tb: null, status: null, sets: null, started_at: null, wo: null }).eq('sport_id', spId));
+
+// grava só a estrutura do chaveamento (sem mexer em placares/horários); removed = jogos que deixaram de existir
+export async function saveBracketStructure(sp, removed = []) {
+  const { m, ...data } = sp.bracket;
+  const ok = await run(sb.from('brackets').upsert({ sport_id: sp.id, data, updated_at: new Date().toISOString() }));
+  if (ok && removed.length) await run(sb.from('match_results').delete().eq('sport_id', sp.id).in('match_id', removed));
+  return ok;
+}
