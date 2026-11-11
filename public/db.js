@@ -10,7 +10,7 @@ export const auth = { user: null, role: null };           // role: 'admin' | 'sc
 export const canScore = () => auth.role === 'admin' || auth.role === 'scorer';
 export const isAdmin = () => auth.role === 'admin';
 // outdated = o banco ainda não recebeu as migrations que o site espera (colunas novas ausentes)
-export const state = { outdated: false };
+export const state = { outdated: false, noDur: false };
 export const hooks = { onError: () => {}, onIdle: () => {}, onLive: () => {} };
 
 let inflight = 0;
@@ -30,11 +30,12 @@ export async function loadAll() {
   if (err) throw err.error;
   const s0 = sports.data[0], r0 = results.data[0];
   state.outdated = !!((s0 && !('category' in s0 && 'scoring' in s0 && 'best_of' in s0)) || (s0 && !('avg_minutes' in s0)) || (r0 && !('sets' in r0 && 'started_at' in r0 && 'wo' in r0)));
+  state.noDur = !!(r0 && !('dur' in r0));
   S.teams = teams.data.sort((a, b) => a.pos - b.pos).map(t => ({ id: t.id, name: t.name, pos: t.pos }));
   const recs = {};
   results.data.forEach(r => {
     (recs[r.sport_id] = recs[r.sport_id] || {})[r.match_id] =
-      { date: r.date || '', time: r.time || '', place: r.place || '', status: r.status, sa: r.sa, sb: r.sb, pa: r.pa, pb: r.pb, tb: r.tb, sets: r.sets, started_at: r.started_at, wo: r.wo };
+      { date: r.date || '', time: r.time || '', place: r.place || '', status: r.status, sa: r.sa, sb: r.sb, pa: r.pa, pb: r.pb, tb: r.tb, sets: r.sets, started_at: r.started_at, wo: r.wo, dur: r.dur ?? null };
   });
   S.sports = sports.data.sort((a, b) => a.pos - b.pos).map(s => {
     const b = brackets.data.find(x => x.sport_id === s.id);
@@ -83,10 +84,12 @@ export const signOut = () => sb.auth.signOut();
 
 /* ---------- gravação: mesário e admin ---------- */
 // vários jogos de uma vez (agendamento em sequência): uma única gravação
+// banco sem a coluna "dur" (migration pendente): tira o campo para não derrubar o resto da gravação
+const noDur = o => { if (!state.noDur || !('dur' in o)) return o; if (o.dur != null) hooks.onError('Rode a migration nova (supabase db push) para salvar a duração dos jogos.'); const { dur, ...rest } = o; return rest; };
 export const saveMatches = (sportId, list) =>
-  run(sb.from('match_results').upsert(list.map(({ id, ...patch }) => ({ sport_id: sportId, match_id: id, ...patch })), { onConflict: 'sport_id,match_id' }));
+  run(sb.from('match_results').upsert(list.map(({ id, ...patch }) => ({ sport_id: sportId, match_id: id, ...noDur(patch) })), { onConflict: 'sport_id,match_id' }));
 export const saveMatch = (sportId, matchId, patch) =>
-  run(sb.from('match_results').upsert({ sport_id: sportId, match_id: matchId, ...patch }, { onConflict: 'sport_id,match_id' }));
+  run(sb.from('match_results').upsert({ sport_id: sportId, match_id: matchId, ...noDur(patch) }, { onConflict: 'sport_id,match_id' }));
 
 /* ---------- gravação: só admin ---------- */
 export const saveTeam = t => run(sb.from('teams').upsert({ id: t.id, name: t.name, pos: t.pos }));
@@ -113,7 +116,7 @@ export const dropBracket = async spId => {
   return run(sb.from('brackets').delete().eq('sport_id', spId));
 };
 export const clearSchedule = spId =>
-  run(sb.from('match_results').update({ date: null, time: null, place: null }).eq('sport_id', spId));
+  run(sb.from('match_results').update(state.noDur ? { date: null, time: null, place: null } : { date: null, time: null, place: null, dur: null }).eq('sport_id', spId));
 export const clearScores = spId =>
   run(sb.from('match_results').update({ sa: null, sb: null, pa: null, pb: null, tb: null, status: null, sets: null, started_at: null, wo: null }).eq('sport_id', spId));
 

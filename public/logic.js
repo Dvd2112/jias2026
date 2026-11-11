@@ -226,7 +226,8 @@ export function patchMatch(sp, mid, field, val) {
   const rec = br.m[mid] || (br.m[mid] = {}), patch = {};
   const set = (k, v) => { rec[k] = v; patch[k] = v; };
   if (field === 'date' || field === 'time' || field === 'place') { set(field, String(val).trim()); return patch; }
-  if (field === 'clearsched') { ['date', 'time', 'place'].forEach(k => set(k, '')); return patch; }
+  if (field === 'dur') { set('dur', val == null || val === '' ? null : Math.min(480, Math.max(5, Math.round(Number(val) || 0)))); return patch; }
+  if (field === 'clearsched') { ['date', 'time', 'place'].forEach(k => set(k, '')); if (rec.dur != null) set('dur', null); return patch; }
   if (field === 'reset') { ['sa', 'sb', 'pa', 'pb', 'tb', 'status', 'sets', 'started_at', 'wo'].forEach(k => set(k, null)); return patch; }   // zera o jogo, mantém data/hora/local
   if (m.bye || m.a == null || m.b == null) return null;
   if (!(rec.pa === m.a && rec.pb === m.b)) ['sa', 'sb', 'tb', 'status', 'sets', 'started_at', 'wo'].forEach(k => set(k, null)); // times mudaram: descarta o que era de outra partida
@@ -330,7 +331,7 @@ export function span(sp, m) {
   const r = m.rec || {};
   if (!r.date || !r.time) return null;
   const start = schedTs(r);
-  return { start, end: start + minutesOf(sp) * 60000 };
+  return { start, end: start + (Number(r.dur) || minutesOf(sp)) * 60000 };
 }
 // jogos que se sobrepõem no mesmo ginásio OU com a mesma atlética. Devolve { [sp.id + m.id]: Set(motivos) }
 export function findConflicts(items) {
