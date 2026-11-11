@@ -1,0 +1,13 @@
+# Vercel / Supabase CLI (estado local)
+.vercel
+supabase/.temp
+supabase/.branches
+
+# nunca versionar segredos (a service_role key só vai por variável de ambiente)
+.env
+.env.*
+
+# lixo do Windows/WSL
+*:Zone.Identifier
+.DS_Store
+node_modules

@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0F2744">
+<title>JIAS 2026 — Placar ao vivo</title>
+<link rel="icon" type="image/png" href="assets/favicon.png">
+<link rel="apple-touch-icon" href="assets/apple-touch-icon.png">
+<meta property="og:title" content="JIAS 2026 — Jogos Interatléticas Solidários">
+<meta property="og:description" content="Placares, horários e chaveamentos em tempo real.">
+<meta property="og:image" content="assets/icon-512.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Anton&family=Inter:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="top">
+  <div class="brand">
+    <img class="logo" src="assets/logo.webp" alt="JIAS 2026" width="44" height="44" onerror="this.remove();document.querySelector('.shield').style.display='block'">
+    <svg class="shield" style="display:none" viewBox="0 0 64 76" aria-hidden="true">
+      <path d="M32 3 L46 9 L58 6 L55 20 V44 C55 58 44 68 32 73 C20 68 9 58 9 44 V20 L6 6 L18 9 Z" fill="#F4EFE6" stroke="#C9A34B" stroke-width="3" stroke-linejoin="round"/>
+      <path d="M32 11 L42 15 L51 13 V44 C51 55 42 63 32 67 C22 63 13 55 13 44 V13 L22 15 Z" fill="none" stroke="#0F2744" stroke-width="3" stroke-linejoin="round"/>
+      <path d="M32 22 C37 28 38 33 32 40 C26 33 27 28 32 22Z" fill="#C93A1E"/>
+      <rect x="29.5" y="40" width="5" height="12" fill="#0F2744"/>
+    </svg>
+    <div><h1>JIAS <span>2026</span></h1><p>Jogos Interatléticas Solidários</p></div>
+  </div>
+  <nav class="tabs" id="tabs" aria-label="Seções"></nav>
+  <div class="hright"><span id="conn" class="conn off" title="Conectando…"></span><span id="who"></span></div>
+</header>
+
+<main id="view"></main>
+
+<dialog id="login">
+  <form method="dialog" class="loginform">
+    <img class="logo-login" src="assets/logo.webp" alt="" width="96" height="96">
+    <h2>Entrar</h2>
+    <p class="muted">Acesso para mesários e organização. Quem só acompanha os jogos não precisa de login.</p>
+    <label class="fld">E-mail<input name="email" type="email" autocomplete="username" required></label>
+    <label class="fld">Senha<input name="password" type="password" autocomplete="current-password" required></label>
+    <p id="loginMsg" class="muted" role="status"></p>
+    <div class="row"><button class="btn" type="submit">Entrar</button><button class="btn alt" type="button" id="loginCancel">Cancelar</button></div>
+  </form>
+</dialog>
+<dialog id="confirmDlg">
+  <form method="dialog" class="loginform">
+    <h2>Confirmar</h2>
+    <p id="cfMsg" style="white-space:pre-line"></p>
+    <div class="row"><button class="btn" id="cfOk" value="ok">Confirmar</button><button class="btn alt" value="cancel">Cancelar</button></div>
+  </form>
+</dialog>
+<div id="toast" class="toast" role="status" aria-live="polite"></div>
+<script>
+/* Se o site não iniciar (arquivo velho em cache, aberto por file://, erro de rede), mostra o motivo em vez de tela vazia. */
+(function () {
+  var shown = false;
+  function show(detail) {
+    var v = document.getElementById('view');
+    if (shown || !v || v.innerHTML.trim()) return;
+    shown = true;
+    v.innerHTML = '<div class="warn"><b>O site não conseguiu iniciar.</b>' + (detail ? '<br><small>' + String(detail).replace(/</g, '&lt;') + '</small>' : '') +
+      '<br><br>• Force a atualização: <b>Ctrl + Shift + R</b> (no celular, limpe os dados do site).' +
+      '<br>• Teste local: abra por um servidor (<code>python3 scripts/serve.py</code> e <code>http://localhost:8000</code>), não clicando no arquivo.</div>';
+  }
+  window.addEventListener('error', function (e) { show(e.message || (e.target && e.target.src ? 'Falha ao carregar ' + e.target.src : '')); }, true);
+  window.addEventListener('unhandledrejection', function (e) { show(e.reason && e.reason.message); });
+  setTimeout(function () { show(''); }, 6000);
+})();
+</script>
+<script type="module" src="app.js"></script>
+</body>
+</html>
