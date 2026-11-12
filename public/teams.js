@@ -17,10 +17,22 @@ export const IDENTITIES = [
   T('devora', 'Devora', 'AAANUFB', ['nutricao'], ['#34205C', '#E8A91E', '#FFFFFF']),
 ];
 
+// emojis do mascote de cada atlética (usados na comemoração ao abrir a página dela)
+const MASCOTS = {
+  corsarios: ['🏴‍☠️', '☠️', '⚓'],
+  macaco: ['🐒', '🍌', '🙈'],
+  urso: ['🐻', '🍯', '🐾'],
+  marreco: ['🦆', '💚', '🖤'],
+  indio: ['🪶', '🏹', '🔥'],
+  lobo: ['🐺', '🌕', '🩸'],
+  predadores: ['🦈', '🌊', '💪'],
+  devora: ['🐰', '🍎', '🏋️'],
+};
+
 const norm = s => String(s ?? '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
 
 // cor de texto legível (preto ou branco) sobre um fundo, pela maior razão de contraste WCAG
-function luminance(hex) {
+export function luminance(hex) {
   const [r, g, b] = [1, 3, 5].map(i => parseInt(hex.slice(i, i + 2), 16) / 255)
     .map(v => v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4);
   return 0.2126 * r + 0.7152 * g + 0.0722 * b;
@@ -33,10 +45,11 @@ export function inkOn(hex) {
 const BY_NAME = new Map();
 IDENTITIES.forEach(id => {
   id.ink = inkOn(id.primary);
+  id.mascots = MASCOTS[id.key] || ['🏆'];
   [id.key, id.name, id.sigla, ...id.aliases].forEach(n => BY_NAME.set(norm(n), id));
 });
 
-const NEUTRAL = { key: null, primary: '#0F2744', secondary: '#C9A34B', accent: '#F4EFE6', ink: '#FFFFFF', logo: null };
+const NEUTRAL = { key: null, mascots: ['🏆', '🎉'], primary: '#0F2744', secondary: '#C9A34B', accent: '#F4EFE6', ink: '#FFFFFF', logo: null };
 
 export function identityOf(name) {
   const id = BY_NAME.get(norm(name));
@@ -51,4 +64,20 @@ function hslHex(h, s, l) {
   const k = n => (n + h / 30) % 12, a = s * Math.min(l, 1 - l);
   const f = n => Math.round(255 * (l - a * Math.max(-1, Math.min(k(n) - 3, Math.min(9 - k(n), 1))))).toString(16).padStart(2, '0');
   return `#${f(0)}${f(8)}${f(4)}`;
+}
+
+/* ---------- tema do site inteiro (atlética seguida) ----------
+   Troca as variáveis base do CSS (--navy, --cream, --gold, --hd) garantindo contraste legível. */
+export const mixHex = (a, b, t) => {
+  const p = h => [1, 3, 5].map(i => parseInt(h.slice(i, i + 2), 16)), A = p(a), B = p(b);
+  return '#' + A.map((v, i) => Math.round(v + (B[i] - v) * t).toString(16).padStart(2, '0')).join('');
+};
+export const contrast = (a, b) => { const x = luminance(a) + .05, y = luminance(b) + .05; return Math.max(x, y) / Math.min(x, y); };
+export function themeOf(id) {
+  let navy = id.primary;                                           // base escura: precisa de texto branco legível
+  for (let i = 0; i < 8 && contrast(navy, '#ffffff') < 4.5; i++) navy = mixHex(navy, '#000000', .18);
+  const cream = mixHex(id.primary, '#ffffff', .93);               // fundo da página
+  const gold = [id.secondary, id.accent, mixHex(id.primary, '#ffffff', .6), '#ffffff'].find(c => contrast(c, navy) >= 3) || '#ffffff';
+  const hd = [id.secondary, id.primary, navy].find(c => contrast(c, cream) >= 4.5) || navy;   // títulos sobre o fundo claro
+  return { navy, navy2: mixHex(navy, '#ffffff', .14), cream, gold, hd };
 }

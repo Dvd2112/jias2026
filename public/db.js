@@ -5,27 +5,44 @@ import { SUPABASE_URL, SUPABASE_ANON_KEY } from './config.js';
 import { S, defaultConfig } from './logic.js';
 
 export const configured = !SUPABASE_URL.includes('SEU-PROJETO');
-export const sb = configured ? createClient(SUPABASE_URL, SUPABASE_ANON_KEY, { realtime: { params: { eventsPerSecond: 10 } } }) : null;
+/* Teste local: em localhost o site NUNCA grava na produção.
+   ?demo  -> banco falso em memória (demo.js), com login de admin/mesário de mentira.
+   sem ?demo em localhost -> só leitura (gravar é bloqueado). Em produção nada disso se aplica. */
+const LOCAL = /^(localhost|127\.0\.0\.1)$/.test(location.hostname);
+export const DEMO = LOCAL && /[?&]demo\b/.test(location.search);
+export const sb = DEMO ? (await import('./demo.js')).createDemoClient()
+  : configured ? createClient(SUPABASE_URL, SUPABASE_ANON_KEY, { realtime: { params: { eventsPerSecond: 10 } } }) : null;
 export const auth = { user: null, role: null };           // role: 'admin' | 'scorer' | null (público)
 export const canScore = () => auth.role === 'admin' || auth.role === 'scorer';
 export const isAdmin = () => auth.role === 'admin';
 // outdated = o banco ainda não recebeu as migrations que o site espera (colunas novas ausentes)
-export const state = { outdated: false, noDur: false };
+export const state = { outdated: false, noDur: false, noLikes: false };
 export const hooks = { onError: () => {}, onIdle: () => {}, onLive: () => {} };
 
 let inflight = 0;
 export const busy = () => inflight > 0;
 async function run(query) {
+  if (LOCAL && !DEMO) { hooks.onError('Bloqueado: em localhost sem ?demo o site não grava na produção. Abra http://localhost:8000/?demo para testar.'); return false; }
   inflight++;
   try { const { error } = await query; if (error) throw error; return true; }
   catch (e) { hooks.onError(e.message || String(e)); return false; }
   finally { if (--inflight === 0) hooks.onIdle(); }
 }
 
+/* ---------- curtidas da torcida ----------
+   Tabela criada pela migration 20261112000000_team_likes. Se ela ainda não existe no banco, o site esconde o botão (state.noLikes). */
+function setLikes(r) {
+  state.noLikes = !!r.error;
+  S.likes = r.error ? {} : Object.fromEntries(r.data.map(x => [x.team_id, Number(x.likes) || 0]));
+}
+export async function loadLikes() { setLikes(await sb.from('team_likes').select('*')); }
+export const sendLike = teamId => run(sb.rpc('add_like', { p_team: teamId }));
+
 /* ---------- leitura ---------- */
 export async function loadAll() {
   const q = t => sb.from(t).select('*');
-  const [teams, sports, brackets, results, config] = await Promise.all(['teams', 'sports', 'brackets', 'match_results', 'config'].map(q));
+  const [teams, sports, brackets, results, config, likes] = await Promise.all(['teams', 'sports', 'brackets', 'match_results', 'config', 'team_likes'].map(q));
+  setLikes(likes);
   const err = [teams, sports, brackets, results, config].find(r => r.error);
   if (err) throw err.error;
   const s0 = sports.data[0], r0 = results.data[0];
