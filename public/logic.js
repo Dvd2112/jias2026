@@ -6,7 +6,7 @@
 
 // woPenalty: pontos que a atlética perde na classificação geral por cada WO | woGoals: placar do vencedor num WO (a atlética faltosa fica com 0)
 export const defaultConfig = () => ({ pts: [8, 5, 3, 0, 0], win: 3, draw: 1, loss: 0, woPenalty: 2, woGoals: 1 });
-export const S = { teams: [], sports: [], config: defaultConfig() };
+export const S = { teams: [], sports: [], config: defaultConfig(), likes: {} };
 
 export const CATS = { masculino: 'Masculino', feminino: 'Feminino' };
 export const sportLabel = sp => `${sp.name} · ${CATS[sp.category] || ''}`;

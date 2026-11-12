@@ -4,15 +4,24 @@ import {
   totals, patchMatch, clearScoreFields, clearScheduleFields, CATS, sportLabel, catShort, pickFeatured, schedTs,
   minutesOf, setThird, planSequence, span, fmtClock, fmtDay, normPlace,
 } from './logic.js';
-import { identityOf } from './teams.js';
+import { identityOf, themeOf } from './teams.js';
 
 const { auth, canScore, isAdmin } = db;
-const BUILD = '2026-11-11.15';
+const BUILD = '2026-11-12.4';
 const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 const $ = id => document.getElementById(id);
+/* Comemorações (confete, chuva de emoji, corações) aparecem mesmo com "reduzir movimento" ligado no sistema:
+   no Windows/Firefox essa opção costuma vir ativa sem a pessoa saber e esconderia a festa toda. Para voltar a respeitá-la: false. */
+const FESTA_SEMPRE = true;
+const calm = () => !FESTA_SEMPRE && matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+/* atlética seguida: guardada só neste aparelho (sem login) */
+const FOLLOW_KEY = 'jias.follow';
+const loadFollow = () => { try { return localStorage.getItem(FOLLOW_KEY) || ''; } catch { return ''; } };
+const saveFollow = id => { try { id ? localStorage.setItem(FOLLOW_KEY, id) : localStorage.removeItem(FOLLOW_KEY); } catch { /* navegação privada */ } };
 
 window.addEventListener('afterprint', () => document.body.classList.remove('printing-pb'));
-let ui = { tab: 'agenda', sport: null, ag: { sport: '', cat: '', team: '', status: 'all' }, rcat: '', ready: false, openSched: new Set(),
+let ui = { fanfare: true, game: null, fromApp: false, follow: loadFollow(), tab: 'team', sport: null, ag: { sport: '', cat: '', team: '', status: 'all' }, rcat: '', ready: false, openSched: new Set(),
   tb: { by: 'gym', date: '', sport: '', cat: '', edit: false, sel: new Set(), bk: { date: '', place: '', time: '', gap: 10, shift: '' } }, pl: { extra: new Set(), date: '', start: '08:00', end: '20:00', pick: null }, seq: { date: '', time: '08:00', place: '', gap: 10, over: false } };
 
 /* ---------- avisos ---------- */
@@ -77,6 +86,8 @@ function askConfirm(message) {
     dlg.showModal();
   });
 }
+const WATCH_ICON = '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="2.5" y="4" width="19" height="13" rx="2.5"/><path d="M8 21h8M12 17v4"/><path d="M10.2 8.2v5.6l4.6-2.8z" fill="currentColor"/></svg>';
+const watchLink = (sp, m) => `<a class="gwatch ${m.live ? 'live' : ''}" href="#/jogo/${encodeURIComponent(sp.id)}/${encodeURIComponent(m.id)}">${WATCH_ICON}<span>${m.live ? 'Acompanhar ao vivo' : 'Acompanhar jogo'}</span></a>`;
 const ids = (sp, m) => `data-sp="${sp.id}" data-m="${m.id}"`;
 
 function schedInputs(sp, m) {
@@ -127,7 +138,7 @@ function statusBadge(m) {
   if (m.a != null && m.b != null) return '<span class="st">Agendado</span>';
   return '<span class="st tbd">Aguardando</span>';
 }
-function gameCard(sp, m, { showSport = false, extra = '', compact = false, hero = '' } = {}) {
+function gameCard(sp, m, { showSport = false, extra = '', compact = false, hero = '', noWatch = false } = {}) {
   if (m.bye) return `<div class="game bye"><span class="nm">${m.w != null ? esc(tn(m.w)) : 'A definir'}</span><span class="muted">folga — avança direto</span></div>`;
   const side = leadSide(m);
   const row = s => {
@@ -167,8 +178,8 @@ function gameCard(sp, m, { showSport = false, extra = '', compact = false, hero 
     ? `<details class="wo"><summary>Registrar WO (não compareceu)</summary><div class="wobtns">${[m.a, m.b].map(t => `<button class="btn alt sm" ${ids(sp, m)} data-wo="${t}">${esc(tn(t))} faltou</button>`).join('')}</div></details>` : '';
   const hasScore = m.live || m.done || (m.rec && (m.rec.sa != null || m.rec.sb != null || (m.rec.sets && m.rec.sets.length)));
   const del = canScore() && both && hasScore ? `<div class="gdel"><button class="linkbtn" ${ids(sp, m)} data-resetm>🗑 Apagar placar deste jogo</button></div>` : '';
-  return `<article class="game ${m.live ? 'live' : ''} ${m.done ? 'done' : ''} ${compact ? 'compact' : ''} ${hero ? 'hero ' + hero : ''} ${extra}">
-    ${head}${row('a')}${row('b')}${tie}${ctl ? `<div class="gctl ${m.sets !== null && m.live ? 'sets' : ''}">${ctl}</div>` : ''}${woCtl}${del}${sched}</article>`;
+  return `<article data-open="${esc(sp.id)}/${esc(m.id)}" class="game ${m.live ? 'live' : ''} ${m.done ? 'done' : ''} ${compact ? 'compact' : ''} ${hero ? 'hero ' + hero : ''} ${extra}">
+    ${head}${row('a')}${row('b')}${tie}${ctl ? `<div class="gctl ${m.sets !== null && m.live ? 'sets' : ''}">${ctl}</div>` : ''}${woCtl}${del}${sched}${both && !noWatch ? watchLink(sp, m) : ''}</article>`;
 }
 
 /* ---------- render ---------- */
@@ -179,9 +190,25 @@ const ICONS = {
   rank: svg('<path d="M3 21h18M5 21v-7h4v7M10 21V6h4v15M15 21v-10h4v10"/>'),
   table: svg('<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 10h18M3 15h18M9 4v16"/>'),
   plan: svg('<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M8 9v11M14 9v11M5.5 14h0M11 14h0M17 14h0"/>'),
+  team: svg('<path d="M12 3l2.7 5.6 6.1.9-4.4 4.3 1 6.1L12 17l-5.4 2.9 1-6.1L3.2 9.5l6.1-.9z"/>'),
   cfg: svg('<path d="M4 7h10M18 7h2M4 17h2M10 17h10"/><circle cx="16" cy="7" r="2"/><circle cx="8" cy="17" r="2"/>'),
 };
 const focusKey = el => el.tagName + '|' + el.getAttributeNames().filter(n => n.startsWith('data-')).map(n => n + '=' + el.getAttribute(n)).join('&');
+function applyTheme() {
+  const r = document.documentElement.style, t = ui.follow && getTeam(ui.follow);
+  const props = { '--navy': 'navy', '--navy-2': 'navy2', '--cream': 'cream', '--gold': 'gold', '--hd': 'hd' };
+  let color = '#0F2744';
+  if (t) { const th = themeOf(identityOf(t.name)); Object.entries(props).forEach(([p, k]) => r.setProperty(p, th[k])); color = th.navy; }
+  else Object.keys(props).forEach(p => r.removeProperty(p));
+  document.body.classList.toggle('themed', !!t);
+  const meta = document.querySelector('meta[name=theme-color]'); if (meta) meta.content = color;
+}
+function parseHash() {
+  const m = /^#\/jogo\/([^/]+)\/([^/]+)$/.exec(location.hash);
+  ui.game = m ? { sp: decodeURIComponent(m[1]), m: decodeURIComponent(m[2]) } : null;
+  if (!ui.game) ui.fromApp = false;
+}
+window.addEventListener('hashchange', () => { parseHash(); if (!ui.game && ui.tab === 'team') ui.fanfare = true; window.scrollTo(0, 0); render(); });
 function render() {
   if (!getSport(ui.sport)) ui.sport = S.sports[0] && S.sports[0].id;
   if (ui.tab === 'plan' && !canScore()) ui.tab = 'agenda';
@@ -190,23 +217,27 @@ function render() {
   const ae = document.activeElement;
   const ak = ae && v.contains(ae) && /^(INPUT|SELECT)$/.test(ae.tagName) && ae.getAttributeNames().some(n => n.startsWith('data-')) ? focusKey(ae) : null;
   const scroll = window.scrollY;
-  const tabs = [['agenda', 'Jogos'], ['table', 'Tabela'], ['sport', 'Chaves'], ['rank', 'Ranking']];
+  if (ui.follow && !getTeam(ui.follow) && S.teams.length) { ui.follow = ''; saveFollow(''); }
+  applyTheme();
+  const tabs = [['team', ui.follow && getTeam(ui.follow) ? getTeam(ui.follow).name : 'Seguir'], ['agenda', 'Jogos'], ['table', 'Tabela'], ['sport', 'Chaves'], ['rank', 'Ranking']];
   if (canScore()) tabs.push(['plan', 'Horários']);
   if (isAdmin()) tabs.push(['cfg', 'Ajustes']);
-  $('tabs').innerHTML = tabs.map(([id, l]) => `<button class="${ui.tab === id ? 'on' : ''}" data-tab="${id}" ${ui.tab === id ? 'aria-current="page"' : ''}><span class="ic">${ICONS[id]}</span><span class="lb">${l}</span></button>`).join('');
-  $('who').innerHTML = auth.user
+  $('tabs').innerHTML = tabs.map(([id, l]) => `<button class="${!ui.game && ui.tab === id ? 'on' : ''}" data-tab="${id}" ${!ui.game && ui.tab === id ? 'aria-current="page"' : ''}><span class="ic">${ICONS[id]}${id === 'team' && followLive() ? '<i class="tdot"></i>' : ''}</span><span class="lb">${l}</span></button>`).join('');
+  const ft = ui.follow && getTeam(ui.follow), fi = ft && identityOf(ft.name);
+  $('who').innerHTML = (ft ? (fi.logo ? `<img class="hteam" src="${fi.logo}" alt="${esc(ft.name)}" title="Você segue ${esc(ft.name)}" width="34" height="34">` : `<span class="hteam ini">${esc(fi.initials)}</span>`) : '') + (auth.user
     ? `<span class="role">${isAdmin() ? 'Admin' : canScore() ? 'Mesário' : 'Sem permissão'}</span><button class="link" data-logout>Sair</button>`
-    : `<button class="link" data-login>Entrar</button>`;
+    : `<button class="link" data-login>Entrar</button>`);
   if (!ui.ready) { v.innerHTML = '<div class="boot"><img src="assets/logo.webp" alt="JIAS 2026" width="140" height="140"><p class="muted">Carregando…</p></div>'; return; }
   const outdated = db.state.outdated && canScore()
     ? `<div class="warn sticky"><b>Banco de dados desatualizado.</b> O que você alterar <u>não será salvo</u>. Rode no terminal, dentro da pasta do projeto: <code>supabase db push --linked</code> (ou cole os arquivos de <code>supabase/migrations</code> no SQL Editor do Supabase) e recarregue.</div>` : '';
-  v.innerHTML = outdated + { agenda: viewAgenda, table: viewTable, sport: viewSport, rank: viewRank, plan: viewPlan, cfg: viewCfg }[ui.tab]();
+  v.innerHTML = outdated + (ui.game ? viewGame : { team: viewTeam, agenda: viewAgenda, table: viewTable, sport: viewSport, rank: viewRank, plan: viewPlan, cfg: viewCfg }[ui.tab])();
   if (ak) { const el = [...v.querySelectorAll('input,select')].find(x => focusKey(x) === ak); if (el) el.focus({ preventScroll: true }); }
   window.scrollTo(0, scroll);
   const places = [...new Set([...(S.config.gyms || []), ...S.sports.flatMap(s => s.bracket ? Object.values(s.bracket.m).map(r => (r.place || '').trim()).filter(Boolean) : [])])].sort();
   v.insertAdjacentHTML('beforeend', `<datalist id="places">${places.map(p => `<option value="${esc(p)}">`).join('')}</datalist><p class="muted center build">versão ${BUILD}</p>`);
   tickClocks();
   celebrate();
+  if (ui.fanfare && ui.ready && !ui.game && ui.tab === 'team') { ui.fanfare = false; welcomeBurst(); }
 }
 
 /* ---------- animações de pontuação ----------
@@ -266,13 +297,209 @@ setInterval(tickClocks, 20000);
 function celebrate() {
   if (!ui.ready) return;
   const cur = snapshot(), prev = prevSnap; prevSnap = cur;
+  const rk = followRank(), pr = prevRank; prevRank = rk;
   if (!prev) return;                                   // primeira carga: não anima
+  if (rk && pr && rk.pos < pr.pos) { emojiRain(null, 0, ['🚀', '📈', '🏆', '🎉', '🔥']); const b = document.querySelector('.tp-rank'); if (b) replay(b, 'rankup', 1400); }
   Object.entries(cur).forEach(([k, c]) => {
     const p = prev[k]; if (!p || p.team !== c.team) return;
     const el = $('view').querySelector(`[data-gk="${k}"]`); if (!el) return;
-    if (c.v != null && p.v != null && c.v > p.v) burst(el, c.v - p.v);
+    if (c.v != null && p.v != null && c.v > p.v) { burst(el, c.v - p.v); if (ui.follow && c.team === ui.follow) emojiRain(k.split('|')[0], c.v - p.v); }
     if (c.lead && !p.lead) replay(el, 'took-lead', 900);  // passou à frente: a cor da atlética varre a linha
   });
+}
+
+
+/* ----- Minha atlética (seguir) ----- */
+let prevRank = null;
+/* curtidas: uma por atlética em cada aparelho (guardado no navegador), sem desfazer */
+const MINE_KEY = 'jias.likes.mine';
+const mineLikes = () => { try { return JSON.parse(localStorage.getItem(MINE_KEY)) || {}; } catch { return {}; } };
+const setMine = (id, on) => { try { const m = mineLikes(); on ? m[id] = 1 : delete m[id]; localStorage.setItem(MINE_KEY, JSON.stringify(m)); } catch { /* sem armazenamento */ } };
+const nLikes = n => Number(n || 0).toLocaleString('pt-BR');
+const likeShown = id => S.likes[id] || 0;
+function paintLikes() { document.querySelectorAll('[data-likes-team]').forEach(el => { el.textContent = nLikes(likeShown(el.dataset.likesTeam)); }); }
+async function likeTap(btn) {
+  const id = ui.follow; if (!id || db.state.noLikes || mineLikes()[id]) return;
+  setMine(id, true); S.likes[id] = (S.likes[id] || 0) + 1;
+  btn.classList.add('on'); btn.disabled = true; btn.setAttribute('aria-pressed', 'true'); btn.querySelector('.ltxt').textContent = 'Curtido!';
+  replay(btn, 'tap', 400); paintLikes();
+  if (!calm()) {
+    const box = btn.closest('.tp-like'), hs = ['❤️', '💖', '🧡', '💛', '💜', '💙'];
+    for (let i = 0; i < 8; i++) {
+      const h = document.createElement('i'); h.className = 'hfly'; h.textContent = hs[Math.floor(Math.random() * hs.length)];
+      h.style.cssText = `left:${btn.offsetLeft + btn.offsetWidth / 2}px;--dx:${(Math.random() - .5) * 140}px;--dy:${-60 - Math.random() * 80}px;--r:${(Math.random() - .5) * 60}deg;animation-delay:${i * 40}ms`;
+      box.appendChild(h); setTimeout(() => h.remove(), 1400);
+    }
+  }
+  if (!(await db.sendLike(id))) { setMine(id, false); S.likes[id] = Math.max(0, (S.likes[id] || 1) - 1); paintLikes(); render(); }   // não gravou: libera para tentar de novo
+}
+// quem está na página vê o contador subir com as curtidas dos outros (consulta leve, sem recarregar o site)
+setInterval(async () => {
+  if (document.hidden || !ui.ready || db.state.noLikes || !document.querySelector('[data-likes-team]')) return;
+  try { await db.loadLikes(); paintLikes(); } catch { /* tenta no próximo ciclo */ }
+}, 12000);
+const SPORT_EMOJI = [[/futsal|futebol|society/, '⚽'], [/volei|volley/, '🏐'], [/basquete|basket/, '🏀'], [/handebol/, '🤾'], [/tenis|ping|mesa/, '🏓'], [/natacao/, '🏊'], [/atletismo|corrida/, '🏃'], [/xadrez/, '♟️'], [/judo|luta|jiu/, '🥋']];
+const emojiOf = spId => {
+  const sp = getSport(spId), n = sp ? sp.name.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase() : '';
+  const hit = SPORT_EMOJI.find(([re]) => re.test(n));
+  return hit ? hit[1] : '🏅';
+};
+// posição (empates dividem a colocação) na classificação geral e na categoria dele
+function followRank() {
+  if (!ui.follow || !getTeam(ui.follow) || !S.sports.length) return null;
+  const pos = cat => { const T = totals(cat), me = T.find(t => t.id === ui.follow); return me ? { pos: 1 + T.filter(t => t.total > me.total).length, of: T.length, total: me.total, row: me, next: T.filter(t => t.total > me.total).pop() || null } : null; };
+  const g = pos('');
+  return g && { ...g, m: pos('masculino'), f: pos('feminino') };
+}
+function followLive() {
+  if (!ui.follow) return false;
+  return S.sports.some(sp => { const R = resolve(sp); return R && R.list.some(m => m.live && (m.a === ui.follow || m.b === ui.follow)); });
+}
+// chuva de emojis: sobem do rodapé, quicam e somem. Funciona em qualquer aba.
+function emojiRain(spId, delta, set) {
+  if (calm()) return;
+  const pool = set || [emojiOf(spId), emojiOf(spId), '🎉', '🔥', '👏', '💪', '⭐'];
+  const box = document.createElement('div'); box.className = 'rain'; box.setAttribute('aria-hidden', 'true');
+  const n = Math.min(26, 12 + (delta || 1) * 4);
+  for (let i = 0; i < n; i++) {
+    const e = document.createElement('span'), x = 4 + Math.random() * 92;
+    e.textContent = pool[Math.floor(Math.random() * pool.length)];
+    e.style.cssText = `left:${x}%;--h:${35 + Math.random() * 45}vh;--dx:${(Math.random() - .5) * 90}px;--r:${(Math.random() - .5) * 70}deg;font-size:${1.5 + Math.random() * 1.6}rem;animation-delay:${Math.random() * .5}s;animation-duration:${1.7 + Math.random() * 1.1}s`;
+    box.appendChild(e);
+  }
+  document.body.appendChild(box); setTimeout(() => box.remove(), 3600);
+  const t = getTeam(ui.follow);
+  if (t && delta) { const b = document.createElement('div'); b.className = 'rainbanner'; b.setAttribute('aria-hidden', 'true'); b.textContent = `${emojiOf(spId)} ${t.name} pontuou! +${delta}`; document.body.appendChild(b); setTimeout(() => b.remove(), 2600); }
+}
+// ao abrir a página da atlética: confete nas cores dela + emojis do mascote subindo
+function welcomeBurst() {
+  if (calm()) return;
+  const t = ui.follow && getTeam(ui.follow);
+  let cols, emojis;
+  if (t) { const idn = identityOf(t.name); cols = [idn.primary, idn.secondary, idn.accent, '#ffffff', '#C9A34B']; emojis = idn.mascots; }
+  else {   // quem ainda não segue ninguém: cores do evento + mascote de quem lidera
+    const top = totals('')[0], lead = top && top.total > 0 ? identityOf(tn(top.id)).mascots : [];
+    cols = ['#0F2744', '#C9A34B', '#C93A1E', '#F4EFE6', '#ffffff']; emojis = ['🏆', '🎉', '⭐', ...lead];
+  }
+  const box = document.createElement('div'); box.className = 'confetti'; box.setAttribute('aria-hidden', 'true');
+  for (let i = 0; i < 70; i++) {
+    const p = document.createElement('i'), w = 6 + Math.random() * 7;
+    p.style.cssText = `left:${Math.random() * 100}%;width:${w}px;height:${w * (Math.random() < .5 ? 1 : 2.2)}px;background:${cols[i % cols.length]};--sway:${(Math.random() - .5) * 160}px;--spin:${(Math.random() < .5 ? -1 : 1) * (360 + Math.random() * 720)}deg;animation-delay:${Math.random() * .9}s;animation-duration:${2.4 + Math.random() * 1.4}s;border-radius:${Math.random() < .3 ? '50%' : '2px'}`;
+    box.appendChild(p);
+  }
+  // emojis: caem como confete, giram e quicam no chão da tela
+  for (let i = 0; i < 26; i++) {
+    const e = document.createElement('b'), size = 1.5 + Math.random() * 1.1;
+    e.textContent = emojis[i % emojis.length];
+    e.style.cssText = `left:${3 + Math.random() * 92}%;font-size:${size}rem;--sway:${(Math.random() - .5) * 120}px;--spin:${(Math.random() - .5) * 540}deg;--hop:${8 + Math.random() * 14}vh;animation-delay:${Math.random() * 1.1}s;animation-duration:${2.6 + Math.random() * 1.2}s`;
+    box.appendChild(e);
+  }
+  document.querySelectorAll('.confetti').forEach(x => x.remove());   // não empilha se abrir de novo antes de acabar
+  document.body.appendChild(box); setTimeout(() => box.remove(), 6200);
+}
+function teamStats(id) {
+  const st = { J: 0, V: 0, E: 0, D: 0, live: [], next: [], done: [], places: [] };
+  S.sports.forEach(sp => {
+    const R = resolve(sp); if (!R) return;
+    R.list.filter(m => !m.bye && (m.a === id || m.b === id)).forEach(m => {
+      const it = { sp, m };
+      if (m.live) st.live.push(it);
+      else if (m.done) {
+        st.done.push(it); st.J++;
+        if (m.sa === m.sb && m.w == null) st.E++; else if (m.w === id) st.V++; else st.D++;
+      } else if (m.a != null && m.b != null) st.next.push(it);
+    });
+    if (sp.enrolled.includes(id) && sp.bracket) {
+      const P = placements(sp), pos = P.p[id];
+      st.places.push({ sp, pos, complete: P.complete, pts: pos != null ? (S.config.pts[pos] || 0) : null,
+        out: pos == null && !P.complete && R.list.some(m => m.fin && m.l === id) });
+    }
+  });
+  const key = ({ m }) => (m.rec.date || '9999-99-99') + (m.rec.time || '99:99');
+  st.next.sort((x, y) => key(x).localeCompare(key(y)));
+  st.done.sort((x, y) => key(y).localeCompare(key(x)));
+  return st;
+}
+const ORD = ['🥇 Campeã', '🥈 Vice', '🥉 3º lugar', '4º lugar', 'Demais'];
+function likesRank(id) {
+  const me = S.likes[id] || 0; if (!me) return '';
+  return ` · ${1 + S.teams.filter(t => (S.likes[t.id] || 0) > me).length}ª maior torcida`;
+}
+// destaque da atlética que está na frente (classificação geral); some se ninguém pontuou ainda
+function leaderBanner() {
+  const T = totals(''), top = T[0];
+  if (!top || top.total <= 0) return '';
+  const tied = T.filter(t => t.total === top.total);
+  if (tied.length === 1 && tied[0].id === ui.follow) return '';          // quem segue o líder já vê isso no próprio painel
+  const vars = id => { const i = identityOf(tn(id)); return `--tc:${i.primary};--ts:${i.secondary};--ta:${i.accent};--ink:${i.ink}`; };
+  if (tied.length > 1) {
+    return `<section class="tp-lead tie" style="--tc:#0F2744;--ts:#C9A34B;--ta:#F4EFE6;--ink:#fff"><span class="tl-crown">👑</span>
+      <div class="tl-txt"><small>Disputa pela liderança</small><b>${tied.length} atléticas empatadas</b><span>${fmt(top.total)} pontos cada</span></div>
+      <div class="tl-logos">${tied.map(t => tlogo(t.id)).join('')}</div></section>`;
+  }
+  const id = top.id, second = T[1], gap = second ? top.total - second.total : 0, mascot = identityOf(tn(id)).mascots[0];
+  return `<section class="tp-lead" style="${vars(id)}"><span class="tl-crown">👑</span>${tlogo(id)}
+    <div class="tl-txt"><small>Na frente agora</small><b>${esc(tn(id))}</b><span>${fmt(top.total)} pontos${second ? ` · ${fmt(gap)} à frente de ${esc(second.name)}` : ''}</span></div>
+    <span class="tl-mascot" aria-hidden="true">${mascot}</span></section>`;
+}
+function viewTeam() {
+  if (!S.teams.length) return '<p class="empty">Nenhuma atlética cadastrada ainda.</p>';
+  if (!ui.follow || !getTeam(ui.follow)) {
+    return `${leaderBanner()}<section class="tp-pick"><h2>Siga a sua atlética</h2><p class="muted">Escolha uma e ganhe um painel só dela: jogos, posição no ranking e comemoração a cada ponto. Fica salvo neste aparelho.</p>
+      <div class="tp-grid">${S.teams.map(t => { const i = identityOf(t.name); return `<button class="tp-opt" data-follow="${t.id}" style="--tc:${i.primary};--ts:${i.secondary};--ta:${i.accent};--ink:${i.ink}">${tlogo(t.id)}<span>${esc(t.name)}</span>${S.likes[t.id] ? `<small class="tp-lk">❤️ ${nLikes(S.likes[t.id])}</small>` : ''}</button>`; }).join('')}</div></section>`;
+  }
+  const id = ui.follow, t = getTeam(id), idn = identityOf(t.name), R = followRank(), st = teamStats(id);
+  const live = st.live.length > 0;
+  const card = ({ sp, m }) => gameCard(sp, m, { showSport: true });
+  const medal = n => n === 1 ? '🥇' : n === 2 ? '🥈' : n === 3 ? '🥉' : '';
+  const catRank = (l, c) => c ? `<span class="tp-chip"><b>${c.pos}º</b> ${l}</span>` : '';
+  const hero = `<section class="tp-hero ${live ? 'live' : ''}">
+    <div class="tp-top"><button class="tp-swap" data-unfollow>Trocar</button>${live ? '<span class="tp-live">● Em quadra agora</span>' : ''}</div>
+    <div class="tp-id">${tlogo(id)}<div><h2>${esc(t.name)}</h2><span class="tp-sigla">${esc(idn.sigla || 'Atlética')}</span></div></div>
+    <div class="tp-rank"><div class="tp-pos">${R ? R.pos : '–'}<small>º</small> ${R ? medal(R.pos) : ''}</div>
+      <div class="tp-rtxt"><b>na classificação geral</b><span>${R ? `${fmt(R.total)} pontos · ${R.of} atléticas` : ''}</span></div></div>
+    <div class="tp-chips">${R ? catRank('masculino', R.m) + catRank('feminino', R.f) : ''}${R && R.row.wo ? `<span class="tp-chip bad">${R.row.wo} WO · −${fmt(R.row.woPts)}</span>` : ''}</div>
+    ${db.state.noLikes ? '' : `<div class="tp-like"><button class="tp-heart ${mineLikes()[id] ? 'on' : ''}" data-like ${mineLikes()[id] ? 'disabled aria-pressed="true"' : 'aria-pressed="false"'} aria-label="Curtir ${esc(t.name)}"><span class="hrt">❤️</span><span class="ltxt">${mineLikes()[id] ? 'Curtido!' : 'Curtir'}</span></button>
+      <div class="tp-lcount"><b data-likes-team="${id}">${nLikes(likeShown(id))}</b><span>curtidas da torcida${likesRank(id)}</span></div></div>`}
+    ${R && R.next ? `<p class="tp-gap">${R.pos === 1 ? '' : `Faltam <b>${fmt(R.next.total - R.total)}</b> pt${R.next.total - R.total === 1 ? '' : 's'} para alcançar ${esc(R.next.name)}`}</p>` : (R && R.pos === 1 && R.total > 0 ? '<p class="tp-gap">👑 Liderando a competição!</p>' : '')}
+  </section>
+  <div class="tp-stats"><div><b>${st.J}</b><span>jogos</span></div><div><b>${st.V}</b><span>vitórias</span></div><div><b>${st.E}</b><span>empates</span></div><div><b>${st.D}</b><span>derrotas</span></div></div>`;
+  let html = leaderBanner() + hero;
+  if (live) html += `<h2 class="sec live">● Ao vivo agora</h2><div class="cards">${st.live.map(card).join('')}</div>`;
+  if (st.next.length) html += `<h2 class="sec">Próximos jogos</h2><div class="cards">${st.next.slice(0, 8).map(card).join('')}</div>`;
+  if (st.places.length) html += `<h2 class="sec">Campanha por modalidade</h2><div class="tp-camp">${st.places.map(c =>
+    `<div class="tp-c ${c.pos === 0 ? 'gold' : ''}"><span>${emojiOf(c.sp.id)} ${esc(sportLabel(c.sp))}</span><b>${c.pos != null ? ORD[Math.min(c.pos, 4)] + (c.pts ? ` · +${c.pts}` : '') : c.out ? 'Eliminada' : 'Na disputa'}</b></div>`).join('')}</div>`;
+  if (st.done.length) html += `<h2 class="sec">Resultados</h2><div class="cards">${st.done.slice(0, 10).map(card).join('')}</div>`;
+  if (!live && !st.next.length && !st.done.length) html += '<p class="empty">Ainda não há jogos desta atlética. Assim que o chaveamento sair, eles aparecem aqui.</p>';
+  return `<div class="tpage" style="--tc:${idn.primary};--ts:${idn.secondary};--ta:${idn.accent};--ink:${idn.ink}">${html}</div>`;
+}
+
+/* ----- Um jogo só (link compartilhável: #/jogo/<modalidade>/<jogo>) ----- */
+function viewGame() {
+  const sp = getSport(ui.game.sp), R = sp && resolve(sp), m = R && R.byId[ui.game.m];
+  const bar = `<div class="gv-bar"><button class="btn alt sm" data-back>← Voltar</button><button class="btn alt sm" data-share>🔗 Compartilhar</button></div>`;
+  if (!m || m.bye) return `<div class="gv">${bar}<p class="empty">Jogo não encontrado.</p></div>`;
+  const lead = leadSide(m), show = m.live || m.done;
+  const side = s => {
+    const t = m[s], win = m.w != null && m.w === t, v = show ? m['s' + s] : null;
+    return `<div class="gv-side ${win ? 'win' : ''} ${lead === s ? 'lead' : ''}" ${teamVars(t)} data-gk="${sp.id}|${m.id}|${s}">
+      ${t != null ? tlogo(t) : '<span class="tlogo ini" style="background:#fff;color:#0F2744">?</span>'}
+      <div class="gv-name">${t != null ? esc(tn(t)) : 'A definir'}${m.wo && m.wo === t ? '<span class="wobadge">WO</span>' : ''}</div>
+      ${t != null && t === ui.follow ? '<span class="gv-star">⭐ sua atlética</span>' : ''}
+      <div class="gv-score">${v != null ? v : '–'}</div></div>`;
+  };
+  const ts = schedTs(m.rec);
+  const clock = m.live ? (m.rec.started_at ? `<span class="clock" data-since="${esc(m.rec.started_at)}"></span>` : '')
+    : (!m.done && ts != null ? `<span class="clock" data-until="${new Date(ts).toISOString()}"></span>` : '');
+  const sets = m.sets && m.sets.length
+    ? `<div class="gv-sets" aria-label="Pontos por set">${m.sets.map((st, i) => `<div class="${st.done ? '' : 'cur'}"><small>Set ${i + 1}</small><b class="${st.a > st.b ? 'w' : ''}">${st.a}</b><b class="${st.b > st.a ? 'w' : ''}">${st.b}</b></div>`).join('')}</div>` : '';
+  const tie = m.tie && sp.bracket.format === 'knockout' ? `<p class="center muted">${m.w != null ? 'Decidido no desempate' : 'Empate — aguardando desempate'}</p>` : '';
+  const when = whenText(m.rec);
+  const ctl = canScore() ? `<div class="gv-ctl"><h3>Controles do mesário</h3>${gameCard(sp, m, { showSport: true, noWatch: true })}</div>` : '';
+  return `<div class="gv">${bar}
+    <div class="gv-title"><h2>${esc(sp.name)} · ${CATS[sp.category]}</h2><p>${esc(m.label)}</p></div>
+    <section class="gv-hero ${m.live ? 'live' : ''}">${side('a')}<span class="gv-vs">×</span>${side('b')}</section>
+    <div class="gv-info">${statusBadge(m)}${clock}${when ? `<span>🕒 ${when}</span>` : ''}</div>${sets}${tie}${ctl}</div>`;
 }
 
 /* ----- Jogos (tela principal pública) ----- */
@@ -692,7 +919,7 @@ function viewRank() {
     .map(([v, l]) => `<button class="${ui.rcat === v ? 'on' : ''}" data-rcat="${v}">${l}</button>`).join('');
   return `<div class="chips">${chips}</div><div class="card"><h2>Classificação ${ui.rcat ? CATS[ui.rcat].toLowerCase() : 'geral'}</h2><div class="scroll"><table class="rank"><thead><tr><th>#</th><th>Atlética</th>${SP.map(s => `<th class="n">${esc(s.name)}${ui.rcat ? '' : ` <small>${catShort(s.category)}</small>`}</th>`).join('')}
     ${T.some(t => t.wo) ? '<th class="n">WO</th>' : ''}<th class="n">Total</th></tr></thead><tbody>
-    ${T.map((t, k) => `<tr class="${k === 0 && t.total > 0 ? 'first' : ''}"><td class="pos">${k + 1}</td><td>${teamTag(t.id)}</td>
+    ${T.map((t, k) => `<tr class="${k === 0 && t.total > 0 ? 'first' : ''} ${t.id === ui.follow ? 'mine' : ''}"><td class="pos">${k + 1}</td><td>${teamTag(t.id)}</td>
       ${t.sports.map(p => `<td class="n">${p == null ? '<span class="muted">–</span>' : p}</td>`).join('')}
       ${T.some(x => x.wo) ? `<td class="n">${t.wo ? `<span class="neg">−${fmt(t.woPts)}</span> <small>(${t.wo} WO)</small>` : '<span class="muted">–</span>'}</td>` : ''}
       <td class="n"><b>${fmt(t.total)}</b></td></tr>`).join('')}</tbody></table></div>
@@ -758,10 +985,45 @@ function removeTeam(id) {
   })();
 }
 
+/* Modo demo (localhost + ?demo): troca de perfil sem tocar na produção */
+if (db.DEMO) {
+  const box = document.createElement('div'); box.className = 'simbox';
+  box.innerHTML = '<b>DEMO · dados falsos</b><button data-demo="none">Visitante</button><button data-demo="mesario@demo">Mesário</button><button data-demo="admin@demo">Admin</button>';
+  document.body.appendChild(box);
+}
+function openGame(el) {
+  const [sp, m] = el.dataset.open.split('/');
+  ui.fromApp = true; location.hash = `#/jogo/${encodeURIComponent(sp)}/${encodeURIComponent(m)}`;
+}
+document.addEventListener('click', e => {
+  if (e.target.closest('a.gwatch')) { ui.fromApp = true; return; }
+  const a = e.target.closest('[data-open]');
+  if (a && !e.target.closest('button,input,select,textarea,label,summary,details,a')) openGame(a);
+});
+document.addEventListener('keydown', e => {
+  if (e.key === 'Enter' && e.target.matches && e.target.matches('[data-open]')) openGame(e.target);
+});
 document.addEventListener('click', async e => {
   const t = e.target.closest('button'); if (!t) return;
+  if (t.dataset.demo) {
+    if (t.dataset.demo === 'none') await db.signOut(); else await db.signIn(t.dataset.demo, 'demo');
+    return;
+  }
   const d = t.dataset, sp = getSport(ui.sport);
-  if (d.tab) ui.tab = d.tab;
+  if (d.like !== undefined) { likeTap(t); return; }
+  if (d.tab) { ui.tab = d.tab; if (d.tab === 'team') ui.fanfare = true; if (ui.game) { ui.game = null; ui.fromApp = false; history.replaceState(null, '', location.pathname + location.search); window.scrollTo(0, 0); } }
+  else if (d.back !== undefined) {
+    if (ui.fromApp) { history.back(); return; }
+    ui.game = null; history.replaceState(null, '', location.pathname + location.search);
+  }
+  else if (d.share !== undefined) {
+    const url = location.href;
+    if (navigator.share) navigator.share({ title: document.title, url }).catch(() => {});
+    else (navigator.clipboard ? navigator.clipboard.writeText(url).then(() => toast('Link copiado!'), () => toast(url)) : Promise.resolve(toast(url)));
+    return;
+  }
+  else if (d.follow !== undefined) { ui.follow = d.follow; ui.fanfare = true; saveFollow(d.follow); prevRank = null; window.scrollTo(0, 0); }
+  else if (d.unfollow !== undefined) { ui.follow = ''; saveFollow(''); prevRank = null; }
   else if (d.sport) ui.sport = d.sport;
   else if (d.sname !== undefined) { const nx = S.sports.find(s => s.name === d.sname && s.category === sp.category) || S.sports.find(s => s.name === d.sname); if (nx) ui.sport = nx.id; }
   else if (d.rcat !== undefined) ui.rcat = d.rcat;
@@ -973,6 +1235,7 @@ $('loginCancel').addEventListener('click', () => $('login').close());
 
 /* ---------- início ---------- */
 (async function start() {
+  parseHash();
   render();
   if (!db.configured) {
     $('view').innerHTML = '<div class="warn"><b>Falta configurar o Supabase.</b> Preencha a URL e a anon key em <code>public/config.js</code> e rode <code>scripts/setup.sh</code>.</div>';
