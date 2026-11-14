@@ -5,7 +5,7 @@
 import { S, makeBracket, resolve, fmtDay } from './logic.js';
 
 const TEAMS = ['Corsários', 'Macaco', 'Urso', 'Marreco', 'Índio', 'Sanguinária', 'Predadores', 'Devora'];
-const PK = { teams: ['id'], sports: ['id'], brackets: ['sport_id'], match_results: ['sport_id', 'match_id'], config: ['id'], profiles: ['user_id'], team_likes: ['team_id'] };
+const PK = { teams: ['id'], sports: ['id'], brackets: ['sport_id'], match_results: ['sport_id', 'match_id'], config: ['id'], profiles: ['user_id'], team_likes: ['team_id'], sumulas: ['id'], sumula_log: ['id'] };
 const RESULT_DEFAULTS = { date: null, time: null, place: null, status: null, sa: null, sb: null, pa: null, pb: null, tb: null, sets: null, started_at: null, wo: null, dur: null };
 
 function seed() {
@@ -47,6 +47,7 @@ function seed() {
     config: [{ id: 1, data: { gyms: ['Ginásio A', 'Ginásio B'], days: [today] } }],
     team_likes: teams.map((t, i) => ({ team_id: t.id, likes: [128, 342, 87, 511, 63, 214, 45, 190][i] })),
     profiles: [{ user_id: 'u_admin', role: 'admin' }, { user_id: 'u_mesario', role: 'scorer' }],
+    sumulas: [], sumula_log: [],
   };
 }
 
@@ -59,9 +60,45 @@ export function createDemoClient() {
 
   function from(table) {
     const q = { op: 'select', f: [], rows: [], patch: null, single: false };
+    const fail = message => ({ data: null, error: { message } });
+    // imita o que o banco faz nas súmulas: só mesário/admin enxergam; gatilho carimba autor e trava súmula fechada
+    const writeSumula = hit => {
+      const me = session && session.user; if (!me) return fail('new row violates row-level security policy for table "sumulas"');
+      const now = new Date().toISOString(), mail = me.email, admin = me.id === 'u_admin';
+      const log = (id, action) => T.sumula_log.push({ id: T.sumula_log.length + 1, sumula_id: id, action, user_id: me.id, user_email: mail, at: now });
+      if (q.op === 'insert') {
+        for (const row of q.rows) {
+          if (T.sumulas.some(r => r.sport_id === row.sport_id && r.match_id === row.match_id)) return fail('duplicate key value violates unique constraint "sumulas_sport_id_match_id_key"');
+          const id = 'sm_' + Math.random().toString(36).slice(2, 10);
+          T.sumulas.push({ id, sport_id: row.sport_id, match_id: row.match_id, data: structuredClone(row.data), status: 'open',
+            created_by: me.id, created_by_email: mail, created_at: now, updated_by: me.id, updated_by_email: mail, updated_at: now,
+            closed_by: null, closed_by_email: null, closed_at: null, reopened_by: null, reopened_by_email: null, reopened_at: null });
+          log(id, 'create');
+        }
+      } else {
+        for (const r of T.sumulas.filter(hit)) {
+          const p = structuredClone(q.patch), next = p.status || r.status;
+          if (r.status === 'closed') {
+            if (next !== 'open') return fail('Súmula fechada: só um administrador pode reabrir para editar.');
+            if (!admin) return fail('Só um administrador pode reabrir uma súmula fechada.');
+            Object.assign(r, { status: 'open', closed_by: null, closed_by_email: null, closed_at: null, reopened_by: me.id, reopened_by_email: mail, reopened_at: now });
+            log(r.id, 'reopen');
+          } else {
+            const edited = p.data && JSON.stringify(p.data) !== JSON.stringify(r.data) && r.updated_by !== me.id;
+            if (p.data) r.data = p.data;
+            if (next === 'closed') { Object.assign(r, { status: 'closed', closed_by: me.id, closed_by_email: mail, closed_at: now }); log(r.id, 'close'); }
+            else if (edited) log(r.id, 'edit');
+          }
+          Object.assign(r, { updated_by: me.id, updated_by_email: mail, updated_at: now });
+        }
+      }
+      notify(); return { data: null, error: null };
+    };
     const exec = () => {
       const rows = T[table], pk = PK[table];
       const hit = r => q.f.every(fn => fn(r));
+      if ((table === 'sumulas' || table === 'sumula_log') && q.op === 'select' && !(session && session.user)) return { data: [], error: null };
+      if (table === 'sumulas' && q.op !== 'select') return writeSumula(hit);
       if (q.op === 'select') {
         const out = structuredClone(rows.filter(hit));
         return { data: q.single ? (out[0] || null) : out, error: null };
@@ -86,6 +123,7 @@ export function createDemoClient() {
     const b = {
       select() { return b; },
       upsert(rows) { q.op = 'upsert'; q.rows = [].concat(rows); return b; },
+      insert(rows) { q.op = 'insert'; q.rows = [].concat(rows); return b; },
       delete() { q.op = 'delete'; return b; },
       update(p) { q.op = 'update'; q.patch = p; return b; },
       eq(c, v) { q.f.push(r => r[c] === v); return b; },
