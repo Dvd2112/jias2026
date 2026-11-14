@@ -108,6 +108,28 @@ export const saveMatches = (sportId, list) =>
 export const saveMatch = (sportId, matchId, patch) =>
   run(sb.from('match_results').upsert({ sport_id: sportId, match_id: matchId, ...noDur(patch) }, { onConflict: 'sport_id,match_id' }));
 
+/* ---------- súmulas: só mesário e admin (o banco nega leitura ao público; quem criou/fechou/reabriu é carimbado por gatilho) ----------
+   missing = migration 20261114000000_sumulas ainda não rodou. */
+export const sum = { rows: [], loaded: false, missing: false };
+export async function loadSumulas() {
+  if (!canScore()) { sum.rows = []; sum.loaded = false; sum.missing = false; return; }
+  const r = await sb.from('sumulas').select('*');
+  if (r.error) {
+    if (/PGRST205|42P01|schema cache|does not exist/i.test((r.error.code || '') + ' ' + (r.error.message || ''))) { sum.rows = []; sum.missing = true; sum.loaded = true; return; }
+    throw r.error;
+  }
+  sum.rows = r.data; sum.missing = false; sum.loaded = true;
+}
+export const sumulaFor = (sportId, matchId) => sum.rows.find(r => r.sport_id === sportId && r.match_id === matchId) || null;
+export const createSumula = (sportId, matchId, data) => run(sb.from('sumulas').insert({ sport_id: sportId, match_id: matchId, data }));
+export const saveSumula = (id, data) => run(sb.from('sumulas').update({ data }).eq('id', id));
+export const closeSumula = (id, data) => run(sb.from('sumulas').update({ data, status: 'closed' }).eq('id', id));
+export const reopenSumula = id => run(sb.from('sumulas').update({ status: 'open' }).eq('id', id));
+export async function loadSumulaLog(id) {
+  const r = await sb.from('sumula_log').select('*').eq('sumula_id', id);
+  return r.error ? [] : r.data.sort((a, b) => String(a.at).localeCompare(String(b.at)));
+}
+
 /* ---------- gravação: só admin ---------- */
 export const saveTeam = t => run(sb.from('teams').upsert({ id: t.id, name: t.name, pos: t.pos }));
 export const saveSport = s => run(sb.from('sports').upsert({

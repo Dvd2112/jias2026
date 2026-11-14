@@ -5,9 +5,10 @@ import {
   minutesOf, setThird, planSequence, span, fmtClock, fmtDay, normPlace,
 } from './logic.js';
 import { identityOf, themeOf } from './teams.js';
+import * as sm from './sumula.js';
 
 const { auth, canScore, isAdmin } = db;
-const BUILD = '2026-11-12.4';
+const BUILD = '2026-11-14.1';
 const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 const $ = id => document.getElementById(id);
 /* Comemorações (confete, chuva de emoji, corações) aparecem mesmo com "reduzir movimento" ligado no sistema:
@@ -21,7 +22,7 @@ const loadFollow = () => { try { return localStorage.getItem(FOLLOW_KEY) || ''; 
 const saveFollow = id => { try { id ? localStorage.setItem(FOLLOW_KEY, id) : localStorage.removeItem(FOLLOW_KEY); } catch { /* navegação privada */ } };
 
 window.addEventListener('afterprint', () => document.body.classList.remove('printing-pb'));
-let ui = { fanfare: true, game: null, fromApp: false, follow: loadFollow(), tab: 'team', sport: null, ag: { sport: '', cat: '', team: '', status: 'all' }, rcat: '', ready: false, openSched: new Set(),
+let ui = { fanfare: true, game: null, sumula: null, sf: null, sum: { sport: '', status: 'all' }, fromApp: false, follow: loadFollow(), tab: 'team', sport: null, ag: { sport: '', cat: '', team: '', status: 'all' }, rcat: '', ready: false, openSched: new Set(),
   tb: { by: 'gym', date: '', sport: '', cat: '', edit: false, sel: new Set(), bk: { date: '', place: '', time: '', gap: 10, shift: '' } }, pl: { extra: new Set(), date: '', start: '08:00', end: '20:00', pick: null }, seq: { date: '', time: '08:00', place: '', gap: 10, over: false } };
 
 /* ---------- avisos ---------- */
@@ -40,11 +41,14 @@ const typing = () => { const a = document.activeElement; return a && a.matches &
 async function refresh() {
   if (db.busy()) { again = true; return; }       // não sobrescreve uma gravação em andamento
   again = false;
-  try { await db.loadAll(); } catch (e) { toast('Falha ao carregar: ' + (e.message || e), true); return; }
+  try { await db.loadAll(); if (canScore()) await db.loadSumulas(); } catch (e) { toast('Falha ao carregar: ' + (e.message || e), true); return; }
+  if (ui.sf && (ui.sf.dirty || ui.sf.saving)) return;   // súmula sendo preenchida: o rascunho local manda, não redesenha
   if (typing()) { pendingRender = true; return; } // não atropela quem está digitando
   render();
 }
 document.addEventListener('focusout', () => { if (pendingRender) { pendingRender = false; setTimeout(render, 0); } });
+
+async function syncSumulas() { try { await db.loadSumulas(); } catch (e) { toast('Falha ao carregar súmulas: ' + (e.message || e), true); } }
 
 /* ---------- helpers de tela ---------- */
 /* identidade visual: logo + cores da atlética (teams.js), pelo nome */
@@ -104,10 +108,10 @@ function leadSide(m) {
   if (m.cur && m.cur.a !== m.cur.b) return m.cur.a > m.cur.b ? 'a' : 'b';
   return null;
 }
-function scoreCell(sp, m, s) {
+function scoreCell(sp, m, s, ctrl) {
   const show = m.live || m.done, v = m['s' + s];
   // por sets, o número grande são os SETS ganhos; os pontos são lançados no painel do set (setCtl)
-  if (m.sets !== null || !canScore() || m.a == null || m.b == null) return `<span class="sc ${show ? '' : 'dim'}">${show && v != null ? v : '–'}</span>`;
+  if (m.sets !== null || !ctrl || !canScore() || m.a == null || m.b == null) return `<span class="sc ${show ? '' : 'dim'}">${show && v != null ? v : '–'}</span>`;
   return `<div class="step">
     <button class="bump" ${ids(sp, m)} data-bump="${s}" data-delta="-1" aria-label="Menos um">−</button>
     <input type="number" min="0" inputmode="numeric" ${ids(sp, m)} data-mf="s${s}" value="${show || v != null ? (v ?? '') : ''}" aria-label="Placar ${esc(tn(m[s]))}">
@@ -138,23 +142,23 @@ function statusBadge(m) {
   if (m.a != null && m.b != null) return '<span class="st">Agendado</span>';
   return '<span class="st tbd">Aguardando</span>';
 }
-function gameCard(sp, m, { showSport = false, extra = '', compact = false, hero = '', noWatch = false } = {}) {
+function gameCard(sp, m, { showSport = false, extra = '', compact = false, hero = '', noWatch = false, ctrl = false } = {}) {
   if (m.bye) return `<div class="game bye"><span class="nm">${m.w != null ? esc(tn(m.w)) : 'A definir'}</span><span class="muted">folga — avança direto</span></div>`;
   const side = leadSide(m);
   const row = s => {
     const team = m[s], win = m.w != null && m.w === team, lead = side === s;   // quem está na frente fica com a cor da atlética
-    return `<div class="gt ${win || lead ? 'hot' : ''} ${lead ? 'lead' : ''} ${win ? 'win' : ''} ${team == null ? 'tbd' : ''}" ${teamVars(team)} data-gk="${sp.id}|${m.id}|${s}"><span class="nm">${teamCell(team)}${m.wo && m.wo === team ? '<span class="wobadge" title="Não compareceu (WO)">WO</span>' : ''}</span>${setCells(m, s)}${scoreCell(sp, m, s)}</div>`;
+    return `<div class="gt ${win || lead ? 'hot' : ''} ${lead ? 'lead' : ''} ${win ? 'win' : ''} ${team == null ? 'tbd' : ''}" ${teamVars(team)} data-gk="${sp.id}|${m.id}|${s}"><span class="nm">${teamCell(team)}${m.wo && m.wo === team ? '<span class="wobadge" title="Não compareceu (WO)">WO</span>' : ''}</span>${setCells(m, s)}${scoreCell(sp, m, s, ctrl)}</div>`;
   };
   const both = m.a != null && m.b != null;
   let ctl = '';
-  if (canScore() && both) {
+  if (ctrl && canScore() && both) {
     ctl = m.live ? (m.sets !== null ? setCtl(sp, m) : `<button class="btn" ${ids(sp, m)} data-status="final">✔ Encerrar jogo</button>`)
       : m.done ? `<button class="btn alt sm" ${ids(sp, m)} data-status="live">Reabrir</button>`
         : `<button class="btn" ${ids(sp, m)} data-status="live">▶ Iniciar jogo</button>`;
   }
   let tie = '';
   if (m.tie && sp.bracket.format === 'knockout') {
-    tie = canScore()
+    tie = ctrl && canScore()
       ? `<div class="tie">Empate — quem venceu o desempate? ${[m.a, m.b].map(t => `<button class="btn sm ${m.w === t ? '' : 'alt'}" ${ids(sp, m)} data-tb="${t}">${esc(tn(t))}</button>`).join('')}</div>`
       : `<div class="tie">${m.w != null ? 'Decidido no desempate' : 'Empate — aguardando desempate'}</div>`;
   }
@@ -174,12 +178,15 @@ function gameCard(sp, m, { showSport = false, extra = '', compact = false, hero 
     head = `<div class="hhead ${hero}"><span class="hbadge">${hero === 'live' ? '● Ao vivo' : 'Próximo jogo'}</span>
       <span class="hwhat"><b>${esc(sp.name)}</b> <span class="cat ${sp.category}">${CATS[sp.category]}</span> · ${esc(m.label)}</span>${clock}</div>`;
   } else head = `<div class="gmeta">${tag}${statusBadge(m)}</div>`;
-  const woCtl = canScore() && both && !m.done
+  const woCtl = ctrl && canScore() && both && !m.done
     ? `<details class="wo"><summary>Registrar WO (não compareceu)</summary><div class="wobtns">${[m.a, m.b].map(t => `<button class="btn alt sm" ${ids(sp, m)} data-wo="${t}">${esc(tn(t))} faltou</button>`).join('')}</div></details>` : '';
   const hasScore = m.live || m.done || (m.rec && (m.rec.sa != null || m.rec.sb != null || (m.rec.sets && m.rec.sets.length)));
-  const del = canScore() && both && hasScore ? `<div class="gdel"><button class="linkbtn" ${ids(sp, m)} data-resetm>🗑 Apagar placar deste jogo</button></div>` : '';
+  const del = ctrl && canScore() && both && hasScore ? `<div class="gdel"><button class="linkbtn" ${ids(sp, m)} data-resetm>🗑 Apagar placar deste jogo</button></div>` : '';
+  const srow = canScore() && both && !ctrl && !db.sum.missing ? db.sumulaFor(sp.id, m.id) : null;
+  const sumLink = canScore() && both && !ctrl
+    ? `<div class="gsum"><a class="btn sm sumlink" href="#/jogo/${encodeURIComponent(sp.id)}/${encodeURIComponent(m.id)}">${m.live ? '▶ Lançar placar e súmula' : m.done ? '📋 Abrir jogo e súmula' : '▶ Abrir jogo (placar e súmula)'}${srow ? (srow.status === 'closed' ? ' · súmula fechada' : ' · súmula em andamento') : ''}</a></div>` : '';
   return `<article data-open="${esc(sp.id)}/${esc(m.id)}" class="game ${m.live ? 'live' : ''} ${m.done ? 'done' : ''} ${compact ? 'compact' : ''} ${hero ? 'hero ' + hero : ''} ${extra}">
-    ${head}${row('a')}${row('b')}${tie}${ctl ? `<div class="gctl ${m.sets !== null && m.live ? 'sets' : ''}">${ctl}</div>` : ''}${woCtl}${del}${sched}${both && !noWatch ? watchLink(sp, m) : ''}</article>`;
+    ${head}${row('a')}${row('b')}${tie}${ctl ? `<div class="gctl ${m.sets !== null && m.live ? 'sets' : ''}">${ctl}</div>` : ''}${sumLink}${woCtl}${del}${sched}${both && !noWatch ? watchLink(sp, m) : ''}</article>`;
 }
 
 /* ---------- render ---------- */
@@ -191,6 +198,7 @@ const ICONS = {
   table: svg('<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 10h18M3 15h18M9 4v16"/>'),
   plan: svg('<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M8 9v11M14 9v11M5.5 14h0M11 14h0M17 14h0"/>'),
   team: svg('<path d="M12 3l2.7 5.6 6.1.9-4.4 4.3 1 6.1L12 17l-5.4 2.9 1-6.1L3.2 9.5l6.1-.9z"/>'),
+  sum: svg('<path d="M7 3h8l4 4v14H7z"/><path d="M14 3v5h5M10 12h6M10 16h6"/>'),
   cfg: svg('<path d="M4 7h10M18 7h2M4 17h2M10 17h10"/><circle cx="16" cy="7" r="2"/><circle cx="8" cy="17" r="2"/>'),
 };
 const focusKey = el => el.tagName + '|' + el.getAttributeNames().filter(n => n.startsWith('data-')).map(n => n + '=' + el.getAttribute(n)).join('&');
@@ -204,14 +212,16 @@ function applyTheme() {
   const meta = document.querySelector('meta[name=theme-color]'); if (meta) meta.content = color;
 }
 function parseHash() {
-  const m = /^#\/jogo\/([^/]+)\/([^/]+)$/.exec(location.hash);
+  const m = /^#\/jogo\/([^/]+)\/([^/]+)$/.exec(location.hash), x = /^#\/sumula\/([^/]+)\/([^/]+)$/.exec(location.hash);
   ui.game = m ? { sp: decodeURIComponent(m[1]), m: decodeURIComponent(m[2]) } : null;
-  if (!ui.game) ui.fromApp = false;
+  ui.sumula = x ? { sp: decodeURIComponent(x[1]), m: decodeURIComponent(x[2]) } : null;
+  if (!ui.game && !ui.sumula) ui.fromApp = false;
 }
-window.addEventListener('hashchange', () => { parseHash(); if (!ui.game && ui.tab === 'team') ui.fanfare = true; window.scrollTo(0, 0); render(); });
+window.addEventListener('hashchange', () => { leaveSf(); parseHash(); if (!ui.game && ui.tab === 'team') ui.fanfare = true; window.scrollTo(0, 0); render(); });
 function render() {
   if (!getSport(ui.sport)) ui.sport = S.sports[0] && S.sports[0].id;
   if (ui.tab === 'plan' && !canScore()) ui.tab = 'agenda';
+  if (ui.tab === 'sum' && !canScore()) ui.tab = 'agenda';
   if (ui.tab === 'cfg' && !isAdmin()) ui.tab = 'agenda';
   const v = $('view');
   const ae = document.activeElement;
@@ -220,9 +230,11 @@ function render() {
   if (ui.follow && !getTeam(ui.follow) && S.teams.length) { ui.follow = ''; saveFollow(''); }
   applyTheme();
   const tabs = [['team', ui.follow && getTeam(ui.follow) ? getTeam(ui.follow).name : 'Seguir'], ['agenda', 'Jogos'], ['table', 'Tabela'], ['sport', 'Chaves'], ['rank', 'Ranking']];
-  if (canScore()) tabs.push(['plan', 'Horários']);
+  if (canScore()) tabs.push(['plan', 'Horários'], ['sum', 'Súmulas']);
   if (isAdmin()) tabs.push(['cfg', 'Ajustes']);
-  $('tabs').innerHTML = tabs.map(([id, l]) => `<button class="${!ui.game && ui.tab === id ? 'on' : ''}" data-tab="${id}" ${!ui.game && ui.tab === id ? 'aria-current="page"' : ''}><span class="ic">${ICONS[id]}${id === 'team' && followLive() ? '<i class="tdot"></i>' : ''}</span><span class="lb">${l}</span></button>`).join('');
+  const away = ui.game || ui.sumula;
+  $('tabs').classList.toggle('dense', tabs.length > 6);
+  $('tabs').innerHTML = tabs.map(([id, l]) => `<button class="${!away && ui.tab === id ? 'on' : ''}" data-tab="${id}" ${!away && ui.tab === id ? 'aria-current="page"' : ''}><span class="ic">${ICONS[id]}${id === 'team' && followLive() ? '<i class="tdot"></i>' : ''}</span><span class="lb">${l}</span></button>`).join('');
   const ft = ui.follow && getTeam(ui.follow), fi = ft && identityOf(ft.name);
   $('who').innerHTML = (ft ? (fi.logo ? `<img class="hteam" src="${fi.logo}" alt="${esc(ft.name)}" title="Você segue ${esc(ft.name)}" width="34" height="34">` : `<span class="hteam ini">${esc(fi.initials)}</span>`) : '') + (auth.user
     ? `<span class="role">${isAdmin() ? 'Admin' : canScore() ? 'Mesário' : 'Sem permissão'}</span><button class="link" data-logout>Sair</button>`
@@ -230,14 +242,14 @@ function render() {
   if (!ui.ready) { v.innerHTML = '<div class="boot"><img src="assets/logo.webp" alt="JIAS 2026" width="140" height="140"><p class="muted">Carregando…</p></div>'; return; }
   const outdated = db.state.outdated && canScore()
     ? `<div class="warn sticky"><b>Banco de dados desatualizado.</b> O que você alterar <u>não será salvo</u>. Rode no terminal, dentro da pasta do projeto: <code>supabase db push --linked</code> (ou cole os arquivos de <code>supabase/migrations</code> no SQL Editor do Supabase) e recarregue.</div>` : '';
-  v.innerHTML = outdated + (ui.game ? viewGame : { team: viewTeam, agenda: viewAgenda, table: viewTable, sport: viewSport, rank: viewRank, plan: viewPlan, cfg: viewCfg }[ui.tab])();
+  v.innerHTML = outdated + (ui.sumula ? viewSumula : ui.game ? viewGame : { team: viewTeam, agenda: viewAgenda, table: viewTable, sport: viewSport, rank: viewRank, plan: viewPlan, sum: viewSumulas, cfg: viewCfg }[ui.tab])();
   if (ak) { const el = [...v.querySelectorAll('input,select')].find(x => focusKey(x) === ak); if (el) el.focus({ preventScroll: true }); }
   window.scrollTo(0, scroll);
   const places = [...new Set([...(S.config.gyms || []), ...S.sports.flatMap(s => s.bracket ? Object.values(s.bracket.m).map(r => (r.place || '').trim()).filter(Boolean) : [])])].sort();
   v.insertAdjacentHTML('beforeend', `<datalist id="places">${places.map(p => `<option value="${esc(p)}">`).join('')}</datalist><p class="muted center build">versão ${BUILD}</p>`);
   tickClocks();
   celebrate();
-  if (ui.fanfare && ui.ready && !ui.game && ui.tab === 'team') { ui.fanfare = false; welcomeBurst(); }
+  if (ui.fanfare && ui.ready && !ui.game && !ui.sumula && ui.tab === 'team') { ui.fanfare = false; welcomeBurst(); }
 }
 
 /* ---------- animações de pontuação ----------
@@ -495,11 +507,203 @@ function viewGame() {
     ? `<div class="gv-sets" aria-label="Pontos por set">${m.sets.map((st, i) => `<div class="${st.done ? '' : 'cur'}"><small>Set ${i + 1}</small><b class="${st.a > st.b ? 'w' : ''}">${st.a}</b><b class="${st.b > st.a ? 'w' : ''}">${st.b}</b></div>`).join('')}</div>` : '';
   const tie = m.tie && sp.bracket.format === 'knockout' ? `<p class="center muted">${m.w != null ? 'Decidido no desempate' : 'Empate — aguardando desempate'}</p>` : '';
   const when = whenText(m.rec);
-  const ctl = canScore() ? `<div class="gv-ctl"><h3>Controles do mesário</h3>${gameCard(sp, m, { showSport: true, noWatch: true })}</div>` : '';
+  const ctl = canScore() ? `<div class="gv-ctl"><h3>Controles do mesário</h3>${gameCard(sp, m, { showSport: true, noWatch: true, ctrl: true })}</div>` : '';
   return `<div class="gv">${bar}
     <div class="gv-title"><h2>${esc(sp.name)} · ${CATS[sp.category]}</h2><p>${esc(m.label)}</p></div>
     <section class="gv-hero ${m.live ? 'live' : ''}">${side('a')}<span class="gv-vs">×</span>${side('b')}</section>
-    <div class="gv-info">${statusBadge(m)}${clock}${when ? `<span>🕒 ${when}</span>` : ''}</div>${sets}${tie}${ctl}</div>`;
+    <div class="gv-info">${statusBadge(m)}${clock}${when ? `<span>🕒 ${when}</span>` : ''}</div>${sets}${tie}${ctl}${canScore() && m.a != null && m.b != null ? `<div class="gv-sum"><h3>Súmula</h3>${sumulaBody(sp.id, m.id)}</div>` : ''}</div>`;
+}
+
+/* ----- Súmulas (só mesário e admin) ----- */
+const sumHref = (sp, m) => `#/sumula/${encodeURIComponent(sp)}/${encodeURIComponent(m)}`;
+const stamp = iso => (iso ? new Date(iso).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : '');
+const SUM_ST = { none: 'Sem súmula', open: 'Em preenchimento', closed: 'Fechada' };
+const sumBadge = st => `<span class="sm-st ${st}">${st === 'closed' ? '🔒 ' : ''}${SUM_ST[st]}</span>`;
+const MIGRATION_WARN = '<div class="warn"><b>Súmulas ainda não estão no banco.</b> Rode no terminal, dentro da pasta do projeto: <code>supabase db push --linked</code> (ou cole <code>supabase/migrations/20261114000000_sumulas.sql</code> no SQL Editor do Supabase) e recarregue.</div>';
+function sumItems() {
+  const items = allItems().filter(({ m }) => m.a != null && m.b != null).map(({ sp, m }) => ({ sp, m, row: db.sumulaFor(sp.id, m.id) }));
+  const seen = new Set(items.map(i => i.sp.id + '|' + i.m.id));
+  db.sum.rows.filter(r => !seen.has(r.sport_id + '|' + r.match_id)).forEach(row => items.push({ sp: null, m: null, row }));   // jogo/modalidade que não existe mais: a súmula continua
+  return items;
+}
+function sumRow({ sp, m, row }) {
+  const st = row ? row.status : 'none', meta = row && row.data && row.data.meta || {};
+  const spName = row ? meta.sport : sp.name, cat = row ? meta.category : sp.category, label = row ? meta.label : m.label;
+  const a = row ? meta.a.name : tn(m.a), b = row ? meta.b.name : tn(m.b);
+  const sid = sp ? sp.id : row.sport_id, mid = m ? m.id : row.match_id;
+  const changed = row && m && (m.a !== meta.a.id || m.b !== meta.b.id);
+  const when = m ? whenText(m.rec) : '';
+  const audit = !row ? '' : st === 'closed'
+    ? `<div class="sm-audit">🔒 Fechada por <b>${esc(row.closed_by_email || '?')}</b> em ${stamp(row.closed_at)}${row.reopened_by_email ? ` · já foi reaberta por ${esc(row.reopened_by_email)}` : ''}</div>`
+    : `<div class="sm-audit">✏️ Criada por <b>${esc(row.created_by_email || '?')}</b> em ${stamp(row.created_at)}${row.updated_by_email && row.updated_by_email !== row.created_by_email ? ` · editada por ${esc(row.updated_by_email)}` : ''}${row.reopened_by_email ? ` · reaberta por ${esc(row.reopened_by_email)}` : ''}</div>`;
+  return `<article class="sm-row ${st}"><div class="sm-top"><span class="tag">${esc(spName)}</span><span class="cat ${cat}">${CATS[cat] || ''}</span><span>${esc(label)}</span>${sumBadge(st)}</div>
+    <div class="sm-teams">${esc(a)} <i>×</i> ${esc(b)}</div>${when ? `<div class="when">🕒 ${when}</div>` : ''}${changed ? '<div class="sm-warn">⚠ o sorteio foi refeito: a súmula guarda o confronto original</div>' : ''}${audit}
+    <div class="row sm-btns"><a class="btn sm sumlink ${row ? 'alt' : ''}" href="${sumHref(sid, mid)}">${!row ? 'Preencher súmula' : st === 'closed' ? 'Ver súmula' : 'Continuar'}</a>
+      ${row ? `<button class="btn alt sm" data-sumpdf data-sid="${row.id}">📄 PDF</button>` : ''}
+      ${row && st === 'closed' && isAdmin() ? `<button class="btn alt sm" data-sumreopen data-sid="${row.id}">↩ Reabrir</button>` : ''}</div></article>`;
+}
+function viewSumulas() {
+  if (db.sum.missing) return MIGRATION_WARN;
+  if (!db.sum.loaded) return '<p class="empty">Carregando súmulas…</p>';
+  const f = ui.sum, all = sumItems();
+  if (!all.length) return '<p class="empty">Ainda não há jogos definidos. Quando o chaveamento sair, as súmulas aparecem aqui.</p>';
+  const names = [...new Set(all.map(i => (i.row ? i.row.data.meta.sport : i.sp.name)))];
+  const stOf = i => (i.row ? i.row.status : 'none');
+  const shown = all.filter(i => (!f.sport || (i.row ? i.row.data.meta.sport : i.sp.name) === f.sport) && (f.status === 'all' || stOf(i) === f.status));
+  const key = ({ m, row }) => ((m ? m.rec.date : row.data.date) || '9999-99-99') + ((m ? m.rec.time : row.data.time) || '99:99');
+  shown.sort((x, y) => key(x).localeCompare(key(y)));
+  const chip = (attr, cur, opts) => `<div class="chips">${opts.map(([v, l]) => `<button class="${cur === v ? 'on' : ''}" ${attr}="${esc(v)}">${esc(l)}</button>`).join('')}</div>`;
+  const cnt = st => all.filter(i => stOf(i) === st).length;
+  return `<h2 class="sec" style="margin-top:4px">Súmulas</h2><p class="muted">Visíveis só para mesários e administradores. Depois de fechada, a súmula não pode mais ser editada; só um administrador reabre.</p>
+    ${chip('data-sumst', f.status, [['all', `Todas (${all.length})`], ['none', `Sem súmula (${cnt('none')})`], ['open', `Em preenchimento (${cnt('open')})`], ['closed', `Fechadas (${cnt('closed')})`]])}
+    ${chip('data-sumsport', f.sport, [['', 'Todas as modalidades'], ...names.map(n => [n, n])])}
+    <div class="cards">${shown.map(sumRow).join('') || '<p class="empty">Nenhuma súmula com esse filtro.</p>'}</div>`;
+}
+
+/* rascunho em memória: cada tecla vai para ui.sf.data e é gravada sozinha (1,5 s depois); a tela não é redesenhada enquanto se digita */
+function setSfState(txt, cls = '') { if (ui.sf) ui.sf.state = [txt, cls]; const el = $('sfState'); if (el) { el.textContent = txt; el.className = 'sf-state ' + cls; } }
+function sfDraft(row) {
+  const f = ui.sf;
+  if (!f || f.row.id !== row.id || (!f.dirty && !f.saving && f.ver !== row.updated_at)) {
+    ui.sf = { row, data: structuredClone(row.data), dirty: false, saving: false, ver: row.updated_at, log: f && f.row.id === row.id ? f.log : null, timer: 0, p: null };
+    if (!ui.sf.log) loadSfLog();
+  } else f.row = row;
+  return ui.sf;
+}
+function loadSfLog() {
+  const f = ui.sf; if (!f) return; const id = f.row.id;
+  db.loadSumulaLog(id).then(l => { if (ui.sf && ui.sf.row.id === id) { ui.sf.log = l; const el = $('sfLog'); if (el) el.innerHTML = logHtml(l); } });
+}
+const LOG_ACT = { create: 'Criou a súmula', edit: 'Editou', close: 'Fechou', reopen: 'Reabriu' };
+const logHtml = l => l ? (l.length ? `<ul>${l.map(x => `<li><b>${LOG_ACT[x.action] || esc(x.action)}</b> · ${esc(x.user_email || '?')} · ${stamp(x.at)}</li>`).join('')}</ul>` : '<p class="muted">Sem registros.</p>') : '<p class="muted">Carregando…</p>';
+function sfTouch() {
+  const f = ui.sf; f.dirty = true; clearTimeout(f.timer); f.timer = setTimeout(flushSf, 1500); setSfState('Alterações não salvas…', 'wait');
+}
+async function flushSf() {
+  const f = ui.sf; if (!f || !f.dirty || f.row.status === 'closed') return true;
+  clearTimeout(f.timer);
+  if (f.p) await f.p;                       // uma gravação por vez
+  if (!f.dirty) return true;
+  f.dirty = false; f.saving = true; setSfState('Salvando…', 'wait');
+  const data = structuredClone(f.data);
+  f.p = db.saveSumula(f.row.id, data);
+  const ok = await f.p; f.p = null; f.saving = false;
+  if (!ok) { f.dirty = true; setSfState('Não salvou — tentando de novo ao editar', 'bad'); return false; }
+  f.row.data = data; setSfState(f.dirty ? 'Alterações não salvas…' : 'Salvo ✔', f.dirty ? 'wait' : 'ok');
+  if (f.dirty) { clearTimeout(f.timer); f.timer = setTimeout(flushSf, 1500); }
+  return true;
+}
+function leaveSf() { const f = ui.sf; if (!f) return; flushSf(); ui.sf = null; }
+document.addEventListener('visibilitychange', () => { if (document.hidden) flushSf(); });
+window.addEventListener('pagehide', () => { flushSf(); });
+function sfSet(path, v) {
+  const f = ui.sf; if (!f || f.row.status === 'closed') return;
+  const st = sm.STAT_RE.exec(path);
+  if (st && sm.statKey(f.data) === st[2] && v !== '') {   // gols do atleta limitados pelo placar da equipe
+    const idx = Number(path.split('.')[2]), max = Math.max(0, sm.totalsOf(f.data)[st[1]] - sm.sumStat(f.data, st[1], idx));
+    if (Number(v) > max) {
+      v = max; toast(`Limite: o placar de ${f.data.meta[st[1]].name} é ${sm.totalsOf(f.data)[st[1]]} — os outros atletas já somam ${sm.sumStat(f.data, st[1], idx)}. Lance o gol no placar primeiro.`, true);
+      const inp = document.querySelector(`[data-sf="${path}"]`); if (inp) inp.value = v;
+    }
+  }
+  if (sm.getPath(f.data, path) === v) return;   // blur sem mudança não conta
+  sm.setPath(f.data, path, v); sfTouch();
+  if (/^score\./.test(path)) { clearTimeout(f.syncT); f.syncT = setTimeout(syncMatch, 600); }
+  const t = sm.totalsOf(f.data); document.querySelectorAll('[data-sf-total]').forEach(el => { el.textContent = t[el.dataset.sfTotal]; });
+  document.querySelectorAll('[data-sf-cap]').forEach(el => { const s2 = el.dataset.sfCap; el.firstChild.textContent = sm.capText(f.data, s2) + ' '; el.classList.toggle('over', sm.sumStat(f.data, s2) > t[s2]); });
+  document.querySelectorAll('input[data-sf^="score."]').forEach(el => { if (document.activeElement !== el) el.value = sm.getPath(f.data, el.dataset.sf) ?? ''; });
+}
+
+const auditHtml = (row, f) => `<details class="card sm-aud" open><summary>🧾 Registro desta súmula</summary>
+  <p>Criada por <b>${esc(row.created_by_email || '?')}</b> em ${stamp(row.created_at)}.<br>
+  Última edição por <b>${esc(row.updated_by_email || '?')}</b> em ${stamp(row.updated_at)}.
+  ${row.status === 'closed' ? `<br>🔒 Fechada por <b>${esc(row.closed_by_email || '?')}</b> em ${stamp(row.closed_at)}.` : ''}
+  ${row.reopened_by_email ? `<br>↩ Reaberta por <b>${esc(row.reopened_by_email)}</b> em ${stamp(row.reopened_at)}.` : ''}</p>
+  <h4>Histórico</h4><div id="sfLog">${logHtml(f.log)}</div></details>`;
+function sumulaBody(spId, mId) {
+  const [stTxt, stCls] = (ui.sf && ui.sf.state) || ['', ''];   // o texto sobrevive a um redesenho da tela
+  const bar = `<div class="sf-bar"><span id="sfState" class="sf-state ${stCls}">${stTxt}</span></div>`;
+  if (!canScore()) return `${bar}<p class="empty">🔒 As súmulas são restritas a mesários e administradores.${auth.user ? '' : '<br>Entre com o seu login para abrir.'}</p>`;
+  if (db.sum.missing) return `${bar}${MIGRATION_WARN}`;
+  if (!db.sum.loaded) return `${bar}<p class="empty">Carregando…</p>`;
+  const row = db.sumulaFor(spId, mId), sp = getSport(spId), R = sp && resolve(sp), m = R && R.byId[mId];
+  if (!row) {
+    if (!m || m.bye || m.a == null || m.b == null) return `${bar}<p class="empty">Jogo não encontrado, ou as duas atléticas ainda não estão definidas.</p>`;
+    return `${bar}<section class="card"><h2>${esc(sm.kindTitle(sm.kindOf(sp.name)))}</h2>
+      <p><b>${esc(sp.name)}</b> <span class="cat ${sp.category}">${CATS[sp.category]}</span> · ${esc(m.label)}<br>${esc(tn(m.a))} × ${esc(tn(m.b))}</p>
+      ${m.live || m.done
+        ? `<p class="muted">Este jogo já começou sem súmula. Abra uma agora: o seu e-mail fica registrado como autor.</p><button class="btn" data-sumnew data-sp="${esc(spId)}" data-m="${esc(mId)}">📋 Abrir súmula</button>`
+        : '<p class="muted">A súmula abre sozinha quando você toca em <b>▶ Iniciar jogo</b> nos controles acima.</p>'}</section>`;
+  }
+  const f = sfDraft(row); sfFromSets(f, m); const d = f.data, meta = d.meta || {}, closed = row.status === 'closed';
+  const changed = m && (m.a !== meta.a.id || m.b !== meta.b.id);
+  const acts = closed
+    ? `<button class="btn" data-sumpdf-open>📄 Baixar PDF</button>${isAdmin() ? '<button class="btn alt" data-sumreopen-open>↩ Reabrir para editar</button>' : ''}`
+    : `<button class="btn alt" data-sumpdf-open>📄 PDF (rascunho)</button><button class="btn" data-sumclose>🔒 Fechar súmula</button>`;
+  return `<div class="sf">${bar}
+    <div class="sf-head"><h2>${esc(sm.kindTitle(d.kind))}</h2>
+      <p><b>${esc(meta.sport)}</b> <span class="cat ${meta.category}">${CATS[meta.category] || ''}</span> · ${esc(meta.label)} ${sumBadge(row.status)}</p>
+      <p class="sf-vs">${esc(meta.a.name)} <i>×</i> ${esc(meta.b.name)}</p></div>
+    ${changed ? `<div class="warn">⚠ O sorteio foi refeito: este jogo agora é <b>${esc(tn(m.a))} × ${esc(tn(m.b))}</b>. Esta súmula guarda o confronto original.</div>` : ''}
+    ${closed ? `<div class="sf-lock">🔒 Súmula fechada por <b>${esc(row.closed_by_email || '?')}</b> em ${stamp(row.closed_at)}. Não pode mais ser editada${isAdmin() ? '' : '; peça a um administrador para reabrir'}.</div>` : ''}
+    <div class="row sf-acts">${acts}</div>
+    <fieldset class="sf-form" ${closed ? 'disabled' : ''}>${sm.formHtml(d)}</fieldset>
+    <div class="row sf-acts">${acts}</div>
+    ${auditHtml(row, f)}</div>`;
+}
+function viewSumula() {
+  return `<div class="gv"><div class="gv-bar"><button class="btn alt sm" data-back>← Voltar</button></div>${sumulaBody(ui.sumula.sp, ui.sumula.m)}</div>`;
+}
+/* placar e súmula andam juntos: gols lançados no jogo entram no período atual da súmula, e o que se lança na súmula vai para o placar */
+const sfLive = () => ui.sf && ui.sf.row.status === 'open' && ui.sf.data.kind !== 'volei' && ui.game && ui.game.sp === ui.sf.row.sport_id && ui.game.m === ui.sf.row.match_id;
+function sfFollow(side, target) {   // o placar mudou: a súmula acompanha
+  if (!sfLive() || sm.followTotal(ui.sf.data, side, target) === false) return;
+  sfTouch();
+}
+function syncMatch() {   // a súmula mudou: o placar acompanha
+  const f = ui.sf; if (!sfLive()) return;
+  const sp = getSport(f.row.sport_id), R = sp && resolve(sp), m = R && R.byId[f.row.match_id];
+  if (!m || m.done || m.bye || m.a !== f.data.meta.a.id || m.b !== f.data.meta.b.id) return;
+  const t = sm.totalsOf(f.data); let changed = false;
+  ['a', 'b'].forEach(x => { if ((m['s' + x] ?? null) !== t[x]) { setMatch(sp.id, m.id, 's' + x, t[x]); changed = true; } });
+  if (changed && !(document.activeElement && document.activeElement.matches && document.activeElement.matches('#view input,#view textarea'))) render();
+}
+function sfFromSets(f, m) {   // vôlei: os pontos de cada set vêm do placar
+  if (f.row.status !== 'open' || !m || !m.sets || f.data.kind !== 'volei' || m.a !== f.data.meta.a.id) return;
+  let diff = false;
+  ['s1', 's2', 's3', 's4', 's5'].forEach((k, i) => ['a', 'b'].forEach(x => {
+    const v = m.sets[i] ? m.sets[i][x] : '';
+    if (String(f.data.score[x][k]) !== String(v)) { f.data.score[x][k] = v; diff = true; }
+  }));
+  if (diff) sfTouch();
+}
+async function startSumula(spId, mId) {
+  const sp = getSport(spId), R = sp && resolve(sp), m = R && R.byId[mId];
+  if (!m || m.bye || m.a == null || m.b == null) return toast('Esse jogo ainda não tem as duas atléticas.', true);
+  const meta = { sport: sp.name, category: sp.category, label: m.label, bestOf: sp.best_of === 5 ? 5 : 3, a: { id: m.a, name: tn(m.a) }, b: { id: m.b, name: tn(m.b) } };
+  const data = sm.newData(sm.kindOf(sp.name), meta, { place: m.rec.place, date: m.rec.date, time: m.rec.time, sa: m.sets ? null : m.sa, sb: m.sets ? null : m.sb });
+  if (await db.createSumula(spId, mId, data)) { await syncSumulas(); toast('Súmula iniciada.'); }
+}
+async function pdfOf(row) {
+  toast('Gerando PDF…');
+  try { await sm.downloadPdf(row); toast('PDF gerado.'); } catch (e) { toast(e.message || 'Falha ao gerar o PDF.', true, 8000); }
+}
+async function closeSumula() {
+  const f = ui.sf; if (!f || f.row.status === 'closed') return;
+  const over = ['a', 'b'].find(x => sm.statKey(f.data) && sm.sumStat(f.data, x) > sm.totalsOf(f.data)[x]);
+  if (over) return toast(`Os gols dos atletas de ${f.data.meta[over].name} passam do placar. Corrija antes de fechar.`, true);
+  if (!(await askConfirm('Fechar a súmula?\n\nDepois de fechada ela não pode mais ser editada. Só um administrador consegue reabrir. O seu e-mail fica registrado como quem fechou, e o PDF é gerado em seguida.'))) return;
+  clearTimeout(f.timer); if (f.p) await f.p;
+  const id = f.row.id, ok = await db.closeSumula(id, f.data);
+  if (!ok) return;
+  f.dirty = false; ui.sf = null; await syncSumulas(); render();
+  const row = db.sum.rows.find(r => r.id === id);
+  if (row && row.status === 'closed') { toast('Súmula fechada.'); pdfOf(row); }
+  else toast('Não foi possível confirmar o fechamento. Recarregue a página.', true);
+}
+async function reopenSumula(id) {
+  if (!(await askConfirm('Reabrir esta súmula para edição?\n\nO seu e-mail fica registrado como quem reabriu. Depois de corrigida, ela precisa ser fechada de novo.'))) return;
+  if (await db.reopenSumula(id)) { if (ui.sf && ui.sf.row.id === id) ui.sf = null; await syncSumulas(); render(); toast('Súmula reaberta.'); }
 }
 
 /* ----- Jogos (tela principal pública) ----- */
@@ -996,7 +1200,7 @@ function openGame(el) {
   ui.fromApp = true; location.hash = `#/jogo/${encodeURIComponent(sp)}/${encodeURIComponent(m)}`;
 }
 document.addEventListener('click', e => {
-  if (e.target.closest('a.gwatch')) { ui.fromApp = true; return; }
+  if (e.target.closest('a.gwatch, a.sumlink')) { ui.fromApp = true; return; }
   const a = e.target.closest('[data-open]');
   if (a && !e.target.closest('button,input,select,textarea,label,summary,details,a')) openGame(a);
 });
@@ -1011,10 +1215,11 @@ document.addEventListener('click', async e => {
   }
   const d = t.dataset, sp = getSport(ui.sport);
   if (d.like !== undefined) { likeTap(t); return; }
-  if (d.tab) { ui.tab = d.tab; if (d.tab === 'team') ui.fanfare = true; if (ui.game) { ui.game = null; ui.fromApp = false; history.replaceState(null, '', location.pathname + location.search); window.scrollTo(0, 0); } }
+  if (d.tab) { leaveSf(); ui.tab = d.tab; if (d.tab === 'team') ui.fanfare = true; if (ui.game || ui.sumula) { ui.game = null; ui.sumula = null; ui.fromApp = false; history.replaceState(null, '', location.pathname + location.search); window.scrollTo(0, 0); } if (d.tab === 'sum') syncSumulas().then(() => render()); }
   else if (d.back !== undefined) {
+    leaveSf();
     if (ui.fromApp) { history.back(); return; }
-    ui.game = null; history.replaceState(null, '', location.pathname + location.search);
+    ui.game = null; ui.sumula = null; history.replaceState(null, '', location.pathname + location.search);
   }
   else if (d.share !== undefined) {
     const url = location.href;
@@ -1027,6 +1232,17 @@ document.addEventListener('click', async e => {
   else if (d.sport) ui.sport = d.sport;
   else if (d.sname !== undefined) { const nx = S.sports.find(s => s.name === d.sname && s.category === sp.category) || S.sports.find(s => s.name === d.sname); if (nx) ui.sport = nx.id; }
   else if (d.rcat !== undefined) ui.rcat = d.rcat;
+  else if (d.sumst !== undefined) ui.sum.status = d.sumst;
+  else if (d.sumsport !== undefined) ui.sum.sport = d.sumsport;
+  else if (d.sumnew !== undefined) { await startSumula(d.sp, d.m); render(); return; }
+  else if (d.sumclose !== undefined) { await closeSumula(); return; }
+  else if (d.sumpdfOpen !== undefined) { if (ui.sf) await pdfOf({ ...ui.sf.row, data: ui.sf.data }); return; }
+  else if (d.sumpdf !== undefined) { const row = db.sum.rows.find(r => r.id === d.sid); if (row) await pdfOf(row); return; }
+  else if (d.sumreopenOpen !== undefined) { if (ui.sf) await reopenSumula(ui.sf.row.id); return; }
+  else if (d.sumreopen !== undefined) { await reopenSumula(d.sid); return; }
+  else if (d.sfGoal !== undefined) { if (ui.sf && ui.sf.row.status === 'open') { sfSet(d.sfGoal, (Number(sm.getPath(ui.sf.data, d.sfGoal)) || 0) + Number(d.n || 1)); } }
+  else if (d.sfAddp !== undefined) { if (ui.sf && ui.sf.row.status === 'open') { sm.addPlayer(ui.sf.data, d.sfAddp); sfTouch(); } }
+  else if (d.sfClear !== undefined) { if (ui.sf && ui.sf.row.status === 'open') { sm.setPath(ui.sf.data, d.sfClear, ''); sfTouch(); } }
   else if (d.tby !== undefined) ui.tb.by = d.tby;
   else if (d.tbsport !== undefined) ui.tb.sport = d.tbsport;
   else if (d.tbcat !== undefined) ui.tb.cat = d.tbcat;
@@ -1069,12 +1285,18 @@ document.addEventListener('click', async e => {
   else if (d.logout !== undefined) { await db.signOut(); return; }
   else if (d.bump) {
     const R = resolve(getSport(d.sp)), m = R.byId[d.m];
-    setMatch(d.sp, d.m, 's' + d.bump, Math.max(0, (m['s' + d.bump] ?? 0) + Number(d.delta)));
+    const nv = Math.max(0, (m['s' + d.bump] ?? 0) + Number(d.delta));
+    setMatch(d.sp, d.m, 's' + d.bump, nv); sfFollow(d.bump, nv);
   }
   else if (d.pt) setMatch(d.sp, d.m, 'pt', { side: d.pt, delta: Number(d.d) });
   else if (d.closeset !== undefined) setMatch(d.sp, d.m, 'closeset');
   else if (d.undoset !== undefined) setMatch(d.sp, d.m, 'undoset');
-  else if (d.status) setMatch(d.sp, d.m, 'status', d.status);
+  else if (d.status) {
+    const R0 = resolve(getSport(d.sp)), m0 = R0 && R0.byId[d.m], first = d.status === 'live' && m0 && !m0.live && !m0.done;
+    setMatch(d.sp, d.m, 'status', d.status);
+    // iniciar o jogo já abre a súmula (o formulário aparece embaixo do placar)
+    if (first && canScore() && ui.game && !db.sum.missing && db.sum.loaded && !db.sumulaFor(d.sp, d.m)) { render(); await startSumula(d.sp, d.m); }
+  }
   else if (d.tb) setMatch(d.sp, d.m, 'tb', d.tb);
   else if (d.gen) {
     const had = !!sp.bracket;
@@ -1148,7 +1370,12 @@ document.addEventListener('click', async e => {
 
 document.addEventListener('change', async e => {
   const el = e.target, d = el.dataset, sp = getSport(ui.sport);
-  if (d.mf) { if (/^(date|time|place)$/.test(d.mf)) ui.openSched.add(`${d.sp}|${d.m}`); setMatch(d.sp, d.m, d.mf, el.value); }
+  if (d.sf !== undefined) { sfSet(d.sf, el.type === 'checkbox' ? el.checked : el.type === 'number' ? (el.value === '' ? '' : Math.max(0, Math.floor(Number(el.value)))) : el.value); if (d.sf === 'period') setTimeout(render, 0); return; }
+  if (d.mf) {
+    if (/^(date|time|place)$/.test(d.mf)) ui.openSched.add(`${d.sp}|${d.m}`);
+    setMatch(d.sp, d.m, d.mf, el.value);
+    if (/^s[ab]$/.test(d.mf) && el.value !== '') sfFollow(d.mf[1], Math.max(0, Math.floor(Number(el.value)) || 0));
+  }
   else if (d.enroll) {
     sp.enrolled = el.checked ? [...new Set([...sp.enrolled, d.enroll])] : sp.enrolled.filter(x => x !== d.enroll);
     db.saveSport(sp);
@@ -1218,6 +1445,12 @@ document.addEventListener('change', async e => {
   setTimeout(render, 0); // espera o foco mudar (Tab) para restaurá-lo no campo certo
 });
 
+document.addEventListener('input', e => {
+  const el = e.target;
+  if (!el.dataset || el.dataset.sf === undefined || el.type === 'checkbox' || el.type === 'radio') return;
+  sfSet(el.dataset.sf, el.type === 'number' ? (el.value === '' ? '' : Math.max(0, Math.floor(Number(el.value)))) : el.value);
+});
+
 document.addEventListener('toggle', e => {
   const sk = e.target.dataset && e.target.dataset.sk; if (!sk) return;
   if (e.target.open) ui.openSched.add(sk); else ui.openSched.delete(sk);
@@ -1241,8 +1474,9 @@ $('loginCancel').addEventListener('click', () => $('login').close());
     $('view').innerHTML = '<div class="warn"><b>Falta configurar o Supabase.</b> Preencha a URL e a anon key em <code>public/config.js</code> e rode <code>scripts/setup.sh</code>.</div>';
     return;
   }
-  await db.initAuth(() => render());
+  await db.initAuth(async () => { await syncSumulas(); render(); });
   try { await db.loadAll(); } catch (e) { toast('Falha ao carregar: ' + (e.message || e), true); }
+  await syncSumulas();
   ui.ready = true; render();
   db.subscribe(refresh);
 })();
